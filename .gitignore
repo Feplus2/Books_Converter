@@ -1,0 +1,13 @@
+# API 密钥 - 切勿提交！
+.env
+
+# 输出目录
+output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 测试文件
+test_book.pdf
