@@ -1,12 +1,10 @@
 """
-Stage 2: DeepSeek V4 Flash — 语义结构分析
+Stage 2: DeepSeek V4 Flash — TOC 引导的语义结构分析
 
-输入 MinerU 输出的 Markdown，用 DeepSeek 通读全文后识别：
-- 图书元数据（书名、作者、译者、出版社）
-- 前页内容（封面、版权、献词、目录、序言）
-- 正文章节（标题、层级、页码范围）
-- 后页内容（附录、参考文献、索引、后记）
-- OCR 噪音区域
+策略：
+1. 先解析目录页(TOC)获取完整层级结构作为"路线图"
+2. 然后在正文中定位每个章节，用 TOC 页码验证边界
+3. 小标题（一、二、和（一）（二））根据上下文判断层级
 """
 
 import json
@@ -20,100 +18,109 @@ from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
 
 logger = logging.getLogger(__name__)
 
-# ── DeepSeek System Prompt ─────────────────────────────────────
 SYSTEM_PROMPT = """你是一位资深中文图书编辑，专精于图书结构分析和OCR后处理。
 
-你的任务：阅读一本中文书籍的OCR全文（已按页标记），分析其语义结构，输出严格的JSON。
+你的任务：阅读一本中文书籍的OCR全文（已按页标记），以目录页为锚点，分析全书结构。
 
-## 需要识别的内容类型
+## 分析步骤
+
+### 第一步：解析目录页(TOC)
+- 从目录页中提取完整的章节层级结构
+- 注意目录的缩进或编号格式（如"第一编""第一章""第一节""一、""（一）"）
+- 目录页中的页码数字是权威的章节起始页参考，但OCR可能有偏移
+- 将目录中的每一项连同其在目录中标注的"印刷页码"记录下来
+
+### 第二步：定位正文中的章节
+- 在正文中定位每个目录条目的实际起始页（[P{N}]标记）
+- 每个章节的结束页 = 下一个同级或上级章节的起始页 - 1
+- 验证：目录标注的页码与正文[P]标记的对应关系
+
+### 第三步：分类前页和后页
+- 目录页之前的内容是前页（封面、版权、献词、序言等）
+- 正文结束后、索引/附录/后记等是后页
+
+## 层级定义
+
+| level | 含义 | 典型格式 |
+|-------|------|---------|
+| 1 | 编/篇/部分 | "第一编 总则"、"上篇"、"Part One" |
+| 2 | 章 | "第一章 民法概述"、"Chapter 1" |
+| 3 | 节 | "第一节 民法的概念"、"§1" |
+| 4 | 小节(一、二、三) | "一、民法的渊源"、"二、民法的效力" |
+| 5 | 细目(（一）（二）) | "（一）制定法"、"（二）习惯法" |
+
+## 内容类型
 
 ### 前页 (front_matter)
-- cover: 封面信息（书名、作者大字、出版社logo）
-- copyright: 版权页（ISBN、版次、图书在版编目CIP数据）
-- dedication: 献词/题词
-- toc: 目录页（章节列表+页码）
-- preface: 序言/前言（他人作序或自序）
-- foreword: 出版说明/凡例/编辑说明
+- cover: 封面
+- copyright: 版权页
+- dedication: 献词
+- toc: 目录页
+- preface: 序言/前言
 
 ### 正文 (body)
-- chapter: 章节正文，需标注标题和层级
-  - level 1: 篇/部分（如"第一部分"、"上篇"）
-  - level 2: 章（如"第一章 xxx"）
-  - level 3: 节（如"第一节 xxx"、"1. xxx"）
-  注意：目录页中列的章节标题不算正文，不要重复标记
+- 每一条都是 chapter 类型
+- 必须包含 title、level、page_start、page_end
 
 ### 后页 (back_matter)
 - appendix: 附录
 - bibliography: 参考文献
 - index: 索引
-- afterword: 后记/跋
-- colophon: 出版信息/版权说明
+- afterword: 后记
 
 ### 噪音 (noise)
-- page_header: 页眉（每页顶部重复出现的书名/章节名）
-- page_footer: 页脚（页码文字，如"·123·"）
-- scan_noise: 扫描噪点文字
+- page_header: 页眉
+- page_footer: 页脚
+- scan_noise: 扫描噪点
 - blank_page: 空白页
 
-## 重要规则
-1. 章节标题必须使用原文中出现的精确文本，不要改写
-2. page_start/page_end 使用文本中的 [P数字] 页码标记
-3. 目录页(TOC)虽然属于前页，但其中列出的章节信息可作为验证章节结构的参考
-4. 序言/前言也属于前页，不是正文第一章
-5. 如果文本中有"目录"页，标记为 toc，其后的正文才是真正的章节开始
-6. level 2 的章节通常有"第X章"格式，但也可能是"Chapter X"或纯数字编号
+## 关键规则
+1. **目录是权威来源**：章节标题必须与目录页一致（OCR可能有少量错字，选择最合理的版本）
+2. 页码标记 [P{N}] 从1开始，N对应扫描件的实际页码
+3. 目录页中列出的印刷页码仅供参考（可能有偏移），以 [P{N}] 标记为准
+4. level 4 和 level 5 的小标题通常不在目录中列出，由LLM根据正文上下文的语义关系判断
+5. 对于"一、二、"开头的段落，判断它是否为真正的层级标题（通常后面紧跟具体内容阐述），还是单纯的列举序号
+6. 不要跳过正文的任何章节，确保 TOC 中的每个条目都有对应的 body 条目
 """
 
 USER_PROMPT_TEMPLATE = """以下是 OCR 识别后的书籍全文。文本中 [P{N}] 标记表示第 N 页的起始位置。
 
-请仔细阅读全文，然后输出如下JSON结构：
+请按照分析步骤，输出如下JSON结构：
 
 ```json
 {
   "metadata": {
-    "title": "书名（原文精确文字）",
+    "title": "书名",
     "authors": ["作者"],
-    "translator": "译者（没有则填null）",
-    "publisher": "出版社（没有则填null）",
+    "translator": "译者（无则null）",
+    "publisher": "出版社",
     "language": "zh"
   },
+  "toc_structure": [
+    {"title": "目录条目原文", "level": 1-5, "toc_page_number": "目录标注的印刷页码"}
+  ],
   "front_matter": [
-    {
-      "type": "cover|copyright|dedication|toc|preface|foreword",
-      "label": "人类可读的描述",
-      "page_start": N,
-      "page_end": N,
-      "keep": true
-    }
+    {"type": "cover|copyright|dedication|toc|preface|foreword", "label": "描述", "page_start": N, "page_end": N, "keep": true}
   ],
   "body": [
-    {
-      "type": "chapter",
-      "title": "章节标题原文",
-      "level": 1或2或3,
-      "page_start": N,
-      "page_end": N
-    }
+    {"type": "chapter", "title": "章节标题原文", "level": 1-5, "page_start": N, "page_end": N}
   ],
   "back_matter": [
-    {
-      "type": "appendix|bibliography|index|afterword",
-      "label": "人类可读的描述",
-      "page_start": N,
-      "page_end": N
-    }
+    {"type": "appendix|bibliography|index|afterword", "label": "描述", "page_start": N, "page_end": N}
   ],
   "noise_ranges": [
-    {"type": "page_header|page_footer|scan_noise", "description": "描述", "pages": [N, N, ...]}
-  ]
+    {"type": "page_header|page_footer|scan_noise|blank_page", "description": "描述", "pages": [N, ...]}
+  ],
+  "toc_page_offset": N
 }
 ```
 
+`toc_page_offset`: 如果目录标注的页码与 [P{N}] 之间有固定偏移（如目录写"第1页"对应[P15]），填偏移量（=15-1=14）。无反则填0。
+
 注意：
-- 用 page_start/page_end 标注页码范围（基于 [P{N}] 标记）
-- 章节 title 必须使用原文精确文字
-- 如果没有某种类型，返回空数组 []
-- 页码标记如 [P1][P2] 仅用于定位，不要在 title 中包含它们
+- body 中的 chapter 必须覆盖 TOC 中的所有条目，一一对应
+- level 4 的小标题作为独立 chapter 条目输出，有独立的 page_start/page_end（即到下一个同级或上级标题为止）
+- 所有数字字段用整数，不要用字符串
 
 === 以下是书籍全文 ===
 
@@ -121,50 +128,39 @@ USER_PROMPT_TEMPLATE = """以下是 OCR 识别后的书籍全文。文本中 [P{
 
 
 def _build_page_marked_text(markdown: str, content_list: list) -> str:
-    """
-    构建带页码标记的全文。
-    在每页起始位置插入 [P{N}] 标记。
-    """
+    """构建带页码标记的全文。每页起始位置插入 [P{N}] 标记。"""
     if not content_list:
-        # 没有 content_list，退化为按行分段
         return markdown
 
-    # 按页组织内容
     pages = {}
     for block in content_list:
         page_idx = block.get("page_idx", 0)
-        if page_idx not in pages:
-            pages[page_idx] = []
-        pages[page_idx].append(block)
+        pages.setdefault(page_idx, []).append(block)
 
-    # 构建带页码标记的文本
     lines = []
     for page_num in sorted(pages.keys()):
-        blocks = pages[page_num]
-        lines.append(f"\n[P{page_num + 1}]\n")  # page_idx 从0开始
-
-        for block in blocks:
-            block_type = block.get("type", "")
+        lines.append(f"\n[P{page_num + 1}]\n")
+        for block in pages[page_num]:
+            btype = block.get("type", "")
             text = ""
 
-            if block_type == "text" or block_type == "title":
+            if btype in ("text", "title"):
                 text = block.get("text", "")
                 level = block.get("text_level", 0)
                 if level > 0:
-                    prefix = "#" * min(level, 6)
-                    text = f"{prefix} {text}"
-            elif block_type == "paragraph":
+                    text = f"{'#' * min(level, 6)} {text}"
+            elif btype == "paragraph":
                 text = block.get("text", "")
-            elif block_type == "image":
-                text = f"[图片: {block.get('image_caption', [''])[0] if block.get('image_caption') else ''}]"
-            elif block_type == "table":
-                body = block.get("table_body", "")
-                text = f"[表格]\n{body}\n[/表格]"
-            elif block_type == "list":
-                items = block.get("list_items", [])
+            elif btype == "image":
+                caps = block.get("image_caption", [])
+                cap = caps[0] if caps else ""
+                text = f"[图片: {cap}]"
+            elif btype == "table":
+                text = f"[表格]\n{block.get('table_body', '')}\n[/表格]"
+            elif btype == "list":
+                items = block.get("list_items", []) or []
                 text = "\n".join(f"- {item}" for item in items)
-            elif block_type in ("header", "footer", "page_number", "aside_text", "page_footnote"):
-                # 页眉页脚标记但不剔除（留给 DeepSeek 判断）
+            elif btype in ("header", "footer", "page_number", "aside_text", "page_footnote"):
                 text = block.get("text", "")
             else:
                 text = block.get("text", "")
@@ -177,100 +173,97 @@ def _build_page_marked_text(markdown: str, content_list: list) -> str:
 
 def _clean_json_response(raw: str) -> str:
     """从 DeepSeek 响应中提取 JSON"""
-    # 尝试匹配 ```json ... ``` 块
-    match = re.search(r"```json\s*(.*?)\s*```", raw, re.DOTALL)
-    if match:
-        return match.group(1)
-
-    # 尝试匹配 ``` ... ``` 块
-    match = re.search(r"```\s*(\{.*?\})\s*```", raw, re.DOTALL)
-    if match:
-        return match.group(1)
-
-    # 尝试匹配裸 JSON
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
-        return match.group(0)
-
+    m = re.search(r"```json\s*(.*?)\s*```", raw, re.DOTALL)
+    if m:
+        return m.group(1)
+    m = re.search(r"```\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if m:
+        return m.group(1)
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        return m.group(0)
     raise ValueError(f"无法从响应中提取JSON: {raw[:500]}...")
 
 
+def _validate_structure(structure: dict) -> dict:
+    """验证并补全结构"""
+    for key in ("metadata", "front_matter", "body", "back_matter", "noise_ranges"):
+        structure.setdefault(key, [] if key != "metadata" else {})
+
+    # 修复可能的字符串数字
+    for ch in structure.get("body", []):
+        for f in ("page_start", "page_end", "level"):
+            if f in ch and isinstance(ch[f], str):
+                try:
+                    ch[f] = int(ch[f])
+                except ValueError:
+                    ch[f] = 0
+
+    for fm in structure.get("front_matter", []):
+        for f in ("page_start", "page_end"):
+            if f in fm and isinstance(fm[f], str):
+                try:
+                    fm[f] = int(fm[f])
+                except ValueError:
+                    fm[f] = 0
+
+    return structure
+
+
 def analyze_structure(markdown: str, content_list: list, book_name: str = "") -> dict:
-    """
-    用 DeepSeek 分析书籍结构。
+    """用 DeepSeek 分析书籍结构——TOC 先行策略"""
+    logger.info("Stage 2: DeepSeek V4 Flash TOC 引导结构分析")
 
-    Returns:
-        dict: 包含 metadata, front_matter, body, back_matter, noise_ranges
-    """
-    logger.info("Stage 2 开始: DeepSeek V4 Flash 结构分析")
-
-    # 构建带页码标记的全文
     book_text = _build_page_marked_text(markdown, content_list)
     text_len = len(book_text)
-    logger.info(f"  全文长度: {text_len:,} 字符 (约 {text_len//2:,} tokens)")
+    logger.info(f"  全文: {text_len:,} 字符 (~{text_len // 2:,} tokens)")
 
     if text_len > 900_000:
-        logger.warning(f"  文本过长({text_len:,}字符)，可能超出上下文限制，将截断")
+        logger.warning(f"  文本过长，截断到 900K 字符")
         book_text = book_text[:900_000]
 
-    client = OpenAI(
-        api_key=DEEPSEEK_API_KEY,
-        base_url=DEEPSEEK_BASE_URL,
-    )
+    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 
     user_prompt = USER_PROMPT_TEMPLATE.replace("{book_text}", book_text)
 
-    try:
-        resp = client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=16384,
-            temperature=0.1,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+    resp = client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=24576,
+        temperature=0.1,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
 
-        raw_output = resp.choices[0].message.content
-        usage = resp.usage
-        logger.info(
-            f"  DeepSeek 响应: {len(raw_output):,} 字符, "
-            f"消耗 {usage.prompt_tokens:,} input + {usage.completion_tokens:,} output tokens"
-        )
+    raw_output = resp.choices[0].message.content
+    usage = resp.usage
+    logger.info(
+        f"  DeepSeek: {len(raw_output):,} 字符, "
+        f"{usage.prompt_tokens:,} in + {usage.completion_tokens:,} out"
+    )
 
-    except Exception as e:
-        logger.error(f"  DeepSeek API 调用失败: {e}")
-        raise
-
-    # 解析 JSON
     json_str = _clean_json_response(raw_output)
-    try:
-        structure = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        logger.error(f"  JSON 解析失败: {e}")
-        logger.error(f"  原始响应前500字符: {raw_output[:500]}")
-        raise
+    structure = json.loads(json_str)
+    structure = _validate_structure(structure)
 
-    # 验证必要字段
-    for key in ("metadata", "front_matter", "body", "back_matter"):
-        if key not in structure:
-            logger.warning(f"  DeepSeek 输出缺少字段 '{key}'，补为空")
-            structure[key] = [] if key != "metadata" else {}
+    body_count = len(structure.get("body", []))
+    toc_count = len(structure.get("toc_structure", []))
+    fm_count = len(structure.get("front_matter", []))
+    bm_count = len(structure.get("back_matter", []))
 
     logger.info(
-        f"  Stage 2 完成: {len(structure['body'])} 个章节, "
-        f"{len(structure['front_matter'])} 个前页段落, "
-        f"{len(structure['back_matter'])} 个后页段落"
+        f"  Stage 2 完成: {body_count} 章节 (TOC {toc_count} 项), "
+        f"{fm_count} 前页, {bm_count} 后页"
     )
 
     return structure
 
 
 def save_structure(structure: dict, output_dir: str) -> Path:
-    """保存结构分析结果"""
     path = Path(output_dir) / "structure.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(structure, f, ensure_ascii=False, indent=2)
-    logger.info(f"  结构分析已保存: {path}")
+    logger.info(f"  结构已保存: {path}")
     return path
