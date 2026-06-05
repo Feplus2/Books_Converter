@@ -2,15 +2,16 @@
 Stage 2: DeepSeek V4 Flash — TOC 引导的语义结构分析
 
 策略：
-1. 先解析目录页(TOC)获取完整层级结构作为"路线图"
-2. 然后在正文中定位每个章节，用 TOC 页码验证边界
-3. 小标题（一、二、和（一）（二））根据上下文判断层级
+1. Pass 1: 解析目录页(TOC)获取高层结构（编/章/节）作为"路线图"
+2. Pass 1.5: 从 TOC 结构提取层级映射表（锚定）
+3. Pass 2: 收集所有候选标题，分批精修，产出完整大纲（complete_outline）
 """
 
 import json
 import logging
 import re
 from pathlib import Path
+from typing import List, Dict, Any
 
 from openai import OpenAI
 
@@ -238,8 +239,270 @@ def _validate_structure(structure: dict) -> dict:
     return structure
 
 
+def _extract_level_mapping(toc_structure: List[Dict]) -> Dict[int, str]:
+    """从 TOC 结构提取层级映射表（Pass 1.5：层级锚定）
+
+    分析 toc_structure 中的标题模式，建立 level → 标题特征 的映射。
+    例如：
+        level 1 → "编" (第一编、第二编...)
+        level 2 → "章" (第一章、第二章...)
+        level 3 → "节" (第一节、第二节...)
+        level 4 → "一、二、三" (小节，目录中未列出)
+        level 5 → "（一）（二）" (细目，目录中未列出)
+
+    返回: {level: description}
+    """
+    level_patterns = {}
+
+    # 分析 toc_structure 中每个 level 的标题特征
+    for item in toc_structure:
+        level = item.get("level", 0)
+        title = item.get("title", "")
+
+        if level not in level_patterns:
+            level_patterns[level] = []
+        level_patterns[level].append(title)
+
+    # 识别每个 level 的常见模式
+    level_mapping = {}
+    for level, titles in sorted(level_patterns.items()):
+        # 检查常见模式
+        if any("编" in t or "篇" in t or "卷" in t or "部" in t for t in titles):
+            level_mapping[level] = "编/篇/卷/部 (最高层)"
+        elif any("章" in t or re.match(r"^Chapter\s", t, re.I) for t in titles):
+            level_mapping[level] = "章"
+        elif any("节" in t or re.match(r"^§", t) for t in titles):
+            level_mapping[level] = "节"
+        elif any(re.match(r"^[一二三四五六七八九十]+、", t) for t in titles):
+            level_mapping[level] = "一、二、三 (小节)"
+        elif any(re.match(r"^（[一二三四五六七八九十]+）", t) for t in titles):
+            level_mapping[level] = "（一）（二）(细目)"
+        else:
+            # 通用描述
+            level_mapping[level] = f"层级 {level} 标题"
+
+    # 推断 level 4 和 5 的默认映射（如果 TOC 中没有）
+    max_level = max(level_mapping.keys()) if level_mapping else 3
+    if 4 not in level_mapping and max_level < 4:
+        level_mapping[4] = "一、二、三 (小节，目录中未列出)"
+    if 5 not in level_mapping and max_level < 5:
+        level_mapping[5] = "（一）（二）或 (1)(2) (细目，目录中未列出)"
+
+    return level_mapping
+
+
+def _collect_heading_candidates(content_list: List[Dict]) -> List[Dict]:
+    """收集所有可能的标题候选（用于 Pass 2 精修）
+
+    收集条件：
+    - type = "title" 的 block
+    - type = "text" 且 text_level >= 1 且文本 < 100 字符
+    - 匹配常见子标题模式的 block（一、（一）等）
+
+    返回: [{"page": N, "text": "...", "mineru_level": N, "context_before": "...", "context_after": "..."}]
+    """
+    candidates = []
+    seen_texts = set()
+
+    # 常见子标题模式
+    sub_heading_patterns = [
+        re.compile(r"^[一二三四五六七八九十]+、"),  # 一、二、三
+        re.compile(r"^（[一二三四五六七八九十]+）"),  # （一）（二）
+        re.compile(r"^\(\d+\)"),  # (1) (2)
+        re.compile(r"^（\d+）"),  # （1）（2）
+        re.compile(r"^\d+\.\s"),  # 1. 2.
+    ]
+
+    for i, block in enumerate(content_list):
+        btype = block.get("type", "")
+        text = block.get("text", "").strip()
+        page = block.get("page_idx", 0) + 1
+
+        if not text:
+            continue
+
+        is_candidate = False
+        mineru_level = block.get("text_level", 0)
+
+        # 条件 1: type = "title"
+        if btype == "title":
+            is_candidate = True
+        # 条件 2: type = "text" 且 text_level >= 1 且 < 100 字符
+        elif btype == "text" and mineru_level >= 1 and len(text) < 100:
+            is_candidate = True
+        # 条件 3: 匹配常见子标题模式
+        elif any(p.match(text) for p in sub_heading_patterns):
+            is_candidate = True
+
+        if is_candidate:
+            # 去重（相同文本只收集一次）
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
+
+            # 获取上下文（前后各 2 个 block）
+            context_before = []
+            for j in range(max(0, i - 2), i):
+                t = content_list[j].get("text", "").strip()
+                if t:
+                    context_before.append(t[:150])  # 截断避免过长
+
+            context_after = []
+            for j in range(i + 1, min(len(content_list), i + 3)):
+                t = content_list[j].get("text", "").strip()
+                if t:
+                    context_after.append(t[:150])
+
+            candidates.append({
+                "page": page,
+                "text": text,
+                "mineru_level": mineru_level,
+                "context_before": "\n".join(context_before),
+                "context_after": "\n".join(context_after),
+            })
+
+    return candidates
+
+
+def _refine_headings(
+    candidates: List[Dict],
+    level_mapping: Dict[int, str],
+    content_list: List[Dict],
+    client: OpenAI,
+) -> List[Dict]:
+    """分批精修候选标题（Pass 2）
+
+    每批 100 个候选，发给 DeepSeek 判断：
+    - "heading" + 层级（1-5）：真正的结构标题
+    - "not_heading"：正文内容（问题、定义、案例、编号列举等）
+
+    返回: complete_outline 列表
+        [{"text": "...", "level": N, "page": N}, ...] 或
+        [{"text": "...", "status": "not_heading", "reason": "..."}]
+    """
+    if not candidates:
+        return []
+
+    logger.info(f"  Pass 2: 精修 {len(candidates)} 个候选标题")
+
+    # 构建层级映射描述
+    level_desc = "\n".join(f"  - level {k}: {v}" for k, v in sorted(level_mapping.items()))
+
+    system_prompt = f"""你正在分析一本书的目录结构。OCR 工具识别出了一些可能的标题，但需要你判断每一条是真正的结构标题还是正文内容。
+
+## 本书的层级映射（严格遵守）
+
+{level_desc}
+
+## 判断规则
+
+1. **真正的层级标题**（标记为 "heading"）：
+   - 后面紧跟具体内容阐述（如章节标题后紧跟该章节的正文）
+   - 通常独占一行或几行
+   - 符合上述层级映射中的某种模式
+
+2. **不是标题**（标记为 "not_heading"）：
+   - 问题/思考题：如 "(1) 甲对乙享有何种权利?"
+   - 定义/概念：如 "权利能力：自然人享有权利和承担义务的资格"
+   - 案例编号：如 "案例 3.1"
+   - 列举序号（非层级）：如 "(1) 第一项，(2) 第二项" 作为列举而非子标题
+   - 正文中的短句：如 "因此，我们可以得出结论"
+
+## 输出格式
+
+JSON 数组，每条包含：
+- "text": 原始文本
+- "status": "heading" 或 "not_heading"
+- 如果 status = "heading"，添加 "level": 1-5（严格符合层级映射）
+- 如果 status = "not_heading"，添加 "reason": 简短原因
+
+示例：
+```json
+[
+  {{"text": "一、公、私法的划分", "status": "heading", "level": 4}},
+  {{"text": "(1) 甲对乙享有何种权利?", "status": "not_heading", "reason": "问题"}},
+  {{"text": "（一）权利的概念", "status": "heading", "level": 5}}
+]
+```"""
+
+    outline = []
+    batch_size = 100
+
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        total_batches = (len(candidates) + batch_size - 1) // batch_size
+
+        logger.info(f"    批次 {batch_num}/{total_batches}: {len(batch)} 个候选")
+
+        # 构建用户提示
+        user_prompt = "以下是本批候选标题及其上下文：\n\n"
+        for j, cand in enumerate(batch, 1):
+            user_prompt += f"{j}. [P{cand['page']}] {cand['text']}\n"
+            if cand["context_before"]:
+                user_prompt += f"   前文: {cand['context_before'][:100]}...\n"
+            if cand["context_after"]:
+                user_prompt += f"   后文: {cand['context_after'][:100]}...\n"
+            user_prompt += "\n"
+
+        user_prompt += "\n请输出 JSON 数组。"
+
+        # 调用 DeepSeek
+        resp = client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=8192,
+            temperature=0.1,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+
+        raw_output = resp.choices[0].message.content
+
+        # 解析 JSON
+        try:
+            json_str = _clean_json_response(raw_output)
+            batch_result = json.loads(json_str)
+
+            if not isinstance(batch_result, list):
+                logger.warning(f"    批次 {batch_num} 返回非数组，跳过")
+                continue
+
+            # 验证并添加到 outline
+            for item in batch_result:
+                text = item.get("text", "")
+                status = item.get("status", "")
+
+                if status == "heading":
+                    level = item.get("level", 4)  # 默认 level 4
+                    # 找到对应的 page
+                    page = 0
+                    for cand in batch:
+                        if cand["text"] == text:
+                            page = cand["page"]
+                            break
+                    outline.append({"text": text, "level": level, "page": page})
+                elif status == "not_heading":
+                    outline.append({"text": text, "status": "not_heading"})
+
+            logger.info(f"      识别 {sum(1 for x in batch_result if x.get('status') == 'heading')} 个标题")
+
+        except Exception as e:
+            logger.warning(f"    批次 {batch_num} 解析失败: {e}")
+            continue
+
+    return outline
+
+
 def analyze_structure(markdown: str, content_list: list, book_name: str = "") -> dict:
-    """用 DeepSeek 分析书籍结构——TOC 先行策略"""
+    """用 DeepSeek 分析书籍结构——三阶段策略
+
+    Pass 1: 读全文，输出高层结构（编/章/节）
+    Pass 1.5: 从 TOC 结构提取层级映射表（锚定）
+    Pass 2: 收集候选标题，分批精修，产出完整大纲（complete_outline）
+    """
     logger.info("Stage 2: DeepSeek V4 Flash TOC 引导结构分析")
 
     book_text = _build_page_marked_text(markdown, content_list)
@@ -252,6 +515,8 @@ def analyze_structure(markdown: str, content_list: list, book_name: str = "") ->
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 
+    # ── Pass 1: 高层结构分析 ──
+    logger.info("  Pass 1: 高层结构分析")
     user_prompt = USER_PROMPT_TEMPLATE.replace("{book_text}", book_text)
 
     resp = client.chat.completions.create(
@@ -268,7 +533,7 @@ def analyze_structure(markdown: str, content_list: list, book_name: str = "") ->
     raw_output = resp.choices[0].message.content
     usage = resp.usage
     logger.info(
-        f"  DeepSeek: {len(raw_output):,} 字符, "
+        f"    {len(raw_output):,} 字符, "
         f"{usage.prompt_tokens:,} in + {usage.completion_tokens:,} out"
     )
 
@@ -282,8 +547,29 @@ def analyze_structure(markdown: str, content_list: list, book_name: str = "") ->
     bm_count = len(structure.get("back_matter", []))
 
     logger.info(
-        f"  Stage 2 完成: {body_count} 章节 (TOC {toc_count} 项), "
+        f"    完成: {body_count} 章节 (TOC {toc_count} 项), "
         f"{fm_count} 前页, {bm_count} 后页"
+    )
+
+    # ── Pass 1.5: 层级锚定 ──
+    toc_structure = structure.get("toc_structure", [])
+    level_mapping = _extract_level_mapping(toc_structure)
+    logger.info(f"  Pass 1.5: 层级映射 → {level_mapping}")
+
+    # ── Pass 2: 标题精修 ──
+    candidates = _collect_heading_candidates(content_list)
+    logger.info(f"  Pass 2: 收集到 {len(candidates)} 个候选标题")
+
+    complete_outline = _refine_headings(candidates, level_mapping, content_list, client)
+
+    # 将 complete_outline 添加到 structure
+    structure["complete_outline"] = complete_outline
+
+    heading_count = sum(1 for x in complete_outline if x.get("status") == "heading" or "level" in x)
+    not_heading_count = sum(1 for x in complete_outline if x.get("status") == "not_heading")
+
+    logger.info(
+        f"    完成: {heading_count} 个标题, {not_heading_count} 个非标题"
     )
 
     return structure
