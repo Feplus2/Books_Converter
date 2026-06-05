@@ -179,8 +179,8 @@ def _render_block_to_html(block: dict, images_dir: str,
                           chinese_punct: bool = False) -> str:
     """将单个 content block 渲染为 HTML。
 
-    注意：标题类 block（type='title' 或 text_level>=1）应已由
-    DeepSeek 结构分析处理，此处仅渲染正文/图片/表格等非标题内容。
+    核心原则：**永不丢弃内容**。所有 block 都有 HTML 输出。
+    标题判断由 `complete_outline` 负责，此处只做忠实渲染。
     """
     btype = block.get("type", "")
     text = block.get("text", "")
@@ -188,18 +188,19 @@ def _render_block_to_html(block: dict, images_dir: str,
     if btype in ("text", "paragraph"):
         if not text.strip():
             return ""
-        level = block.get("text_level", 0)
-        # level >= 1 的文本块可能是 MinerU 猜的标题
-        # 调用方会预先过滤，但这里也做兜底：
-        if level >= 1:
-            return ""  # 跳过，由 DeepSeek 标题覆盖
+        # 无论 text_level 是多少，都渲染为 <p>
+        # 标题判断由 complete_outline 负责
         if chinese_punct:
             text = _convert_punctuation(text)
         return f"<p>{text}</p>"
 
     elif btype == "title":
-        # DeepSeek 提供权威标题，MinerU 的 title 块一律跳过
-        return ""
+        # 也渲染为 <p>，由 complete_outline 决定是否为标题
+        if not text.strip():
+            return ""
+        if chinese_punct:
+            text = _convert_punctuation(text)
+        return f"<p>{text}</p>"
 
     elif btype == "image":
         img_path = block.get("img_path", "") or block.get("image_path", "")
@@ -248,6 +249,7 @@ def _render_block_to_html(block: dict, images_dir: str,
 
     elif btype in ("header", "footer", "page_number", "page_footnote",
                     "aside_text"):
+        # 页眉页脚等噪音，跳过
         return ""
 
     elif btype == "chart":
@@ -266,45 +268,7 @@ def _sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "_", name).strip()
 
 
-# ── 子标题模式检测 ──────────────────────────────────────────────
-
-# 中文子标题模式
-_CN_SUB_L4 = re.compile(
-    r'^[一二三四五六七八九十百]+、'  # 一、 二、 三、...
-)
-_CN_SUB_L5 = re.compile(
-    r'^（[一二三四五六七八九十百]+）'  # （一）（二）...
-)
-# 数字子标题模式
-_NUM_DOT = re.compile(r'^\d+[\.、]')      # 1. 2. 或 1、2、
-_NUM_PAREN = re.compile(r'^\(\d+\)')      # (1) (2)
-_NUM_CN_PAREN = re.compile(r'^（\d+）')   # （1）（2）
-
-
-def _detect_sub_heading_level(text: str) -> int:
-    """检测文本是否为常见子标题格式，返回建议的 heading level。
-
-    返回 4（一、二、）或 5（（一）（二）/ 1. 2. / (1) (2)），
-    不匹配则返回 0。
-    """
-    t = text.strip()
-    if not t or len(t) > 80:
-        return 0
-    # 不能以句末标点结尾（否则是完整句子/问题，不是标题）
-    if _SENTENCE_END.search(t):
-        return 0
-    # 文本中间包含问号 → 可能是思考题，跳过
-    if '？' in t or '?' in t:
-        return 0
-
-    if _CN_SUB_L4.match(t):
-        return 4
-    if _CN_SUB_L5.match(t):
-        return 5
-    # 数字子标题：要求更短（< 50 字符），避免把带编号的长段落当标题
-    if len(t) < 50:
-        if _NUM_DOT.match(t) or _NUM_PAREN.match(t) or _NUM_CN_PAREN.match(t):
-            return 5
+# ── 章节渲染（核心：声明式渲染，不丢内容） ──────────────────────
     return 0
 
 
@@ -373,7 +337,7 @@ def _build_spine_groups(body_items: list, spine_level: int) -> list:
     return groups
 
 
-# ── 章节渲染（核心：按页渲染 + 标题覆写） ──────────────────────
+# ── 章节渲染（核心：声明式渲染，不丢内容） ──────────────────────
 
 def _render_chapter_html(
     ch_item: dict,
@@ -382,28 +346,43 @@ def _render_chapter_html(
     images_dir: str,
     noise_pages: set,
     chinese_punct: bool,
+    complete_outline: list = None,
 ) -> str:
     """渲染一个章（spine item）的完整 HTML。
 
-    策略：
-    1. 以章标题开头（h2）
-    2. 逐页渲染 content blocks
-    3. 遇到匹配 DeepSeek 子标题的 block → 替换为正确层级的 h-tag
-    4. 跳过 MinerU 的 title 块和已知标题文本（避免重复）
+    核心原则：**永不丢弃内容**。
+    - 以章标题开头（h2）
+    - 逐页渲染 content blocks
+    - 遇到匹配 `complete_outline` 中标题的 block → 渲染为 `<h{level}>`
+    - 其他所有 block → 渲染为 `<p>` 或对应的 HTML
+    - **绝不跳过任何 block**（除非是页眉页脚等噪音类型）
     """
     ch_level = ch_item.get("level", 2)
     ch_tag = f"h{min(ch_level, 2)}"
     parts = [f'<{ch_tag} class="chapter-title">{ch_item["title"]}</{ch_tag}>']
 
-    # 构建标题查找表（归一化文本 → 子标题信息）
+    # 构建标题查找表（归一化文本 → 标题信息）
     heading_lookup = {}
+
+    # 1. 从 sub_headings（来自 body 结构）添加
     for sub in sub_headings:
         key = _normalize(sub["title"])
-        heading_lookup[key] = sub
+        heading_lookup[key] = {"level": sub.get("level", 3), "title": sub["title"]}
 
-    # 需要跳过的文本集合（章标题 + 所有子标题）
-    skip_texts = set(heading_lookup.keys())
-    skip_texts.add(_normalize(ch_item["title"]))
+    # 2. 从 complete_outline 添加（覆盖/补充）
+    if complete_outline:
+        for item in complete_outline:
+            if item.get("status") == "heading" or "level" in item:
+                text = item.get("text", "")
+                if text:
+                    key = _normalize(text)
+                    # 只添加 page 在当前章范围内的
+                    page = item.get("page", 0)
+                    if ch_item["page_start"] <= page <= ch_item["page_end"]:
+                        heading_lookup[key] = {"level": item["level"], "title": text}
+
+    # 章标题本身也需要跳过（避免重复渲染）
+    ch_title_normalized = _normalize(ch_item["title"])
 
     # 逐页渲染
     for page in range(ch_item["page_start"], ch_item["page_end"] + 1):
@@ -411,39 +390,26 @@ def _render_chapter_html(
             continue
 
         for block in pages.get(page, []):
-            text = block.get("text", "")
+            text = block.get("text", "").strip()
             btype = block.get("type", "")
 
-            # 1. 跳过所有 title 类型（MinerU 猜的标题）
-            if btype == "title":
+            # 页眉页脚等噪音类型，跳过
+            if btype in ("header", "footer", "page_number", "page_footnote", "aside_text"):
                 continue
 
-            # 2. 检查是否匹配已知子标题 → 插入正确层级的 h-tag
+            # 检查是否匹配标题 → 渲染为 h-tag
             normalized = _normalize(text) if text else ""
             if normalized and normalized in heading_lookup:
-                sub = heading_lookup[normalized]
-                htag = f"h{min(sub['level'], 6)}"
-                parts.append(f"<{htag}>{sub['title']}</{htag}>")
+                h_info = heading_lookup[normalized]
+                htag = f"h{min(h_info['level'], 6)}"
+                parts.append(f"<{htag}>{h_info['title']}</{htag}>")
                 continue
 
-            # 3. 跳过匹配章标题的 block
-            if normalized and normalized in skip_texts:
+            # 跳过章标题（避免重复）
+            if normalized and normalized == ch_title_normalized:
                 continue
 
-            # 4. 处理 MinerU 猜的标题块（text_level >= 1）
-            if btype == "text" and block.get("text_level", 0) >= 1:
-                t = text.strip()
-                if t and len(t) < 80 and not _SENTENCE_END.search(t):
-                    # 不在 DeepSeek 标题列表中，但可能是子标题
-                    # 尝试模式匹配：一、二、→ h4，（一）（二）→ h5
-                    detected_level = _detect_sub_heading_level(t)
-                    if detected_level:
-                        htag = f"h{detected_level}"
-                        parts.append(f"<{htag}>{t}</{htag}>")
-                    # 不匹配任何模式 → 跳过（避免重复的伪标题）
-                    continue
-
-            # 5. 正常渲染
+            # 其他所有 block → 正常渲染（不丢内容）
             rendered = _render_block_to_html(block, images_dir, chinese_punct)
             if rendered:
                 parts.append(rendered)
@@ -694,6 +660,7 @@ def generate_epub(
             ch_html = _render_chapter_html(
                 ch_item, sub_headings, pages, images_dir,
                 noise_pages, chinese_punct,
+                complete_outline=structure.get("complete_outline", []),
             )
 
             file_name = f"chapter_{chapter_idx:03d}.xhtml"
