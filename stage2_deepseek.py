@@ -22,32 +22,52 @@ SYSTEM_PROMPT = """你是一位资深中文图书编辑，专精于图书结构�
 
 你的任务：阅读一本中文书籍的OCR全文（已按页标记），以目录页为锚点，分析全书结构。
 
+## ⚠️ 关键原则：不要信任OCR工具的字号猜测
+
+OCR工具（MinerU）会根据字号大小猜测标题级别（text_level），但这完全不可靠：
+- 同一本书里，"第一章"有时被识别为level 1，有时被识别为level 2
+- 字号大小不等于层级高低（有些正文字号比小标题还大）
+- **你必须完全基于语义分析来确定层级，绝对不能依赖OCR工具的text_level**
+
 ## 分析步骤
 
-### 第一步：解析目录页(TOC)
-- 从目录页中提取完整的章节层级结构
-- 注意目录的缩进或编号格式（如"第一编""第一章""第一节""一、""（一）"）
-- 目录页中的页码数字是权威的章节起始页参考，但OCR可能有偏移
-- 将目录中的每一项连同其在目录中标注的"印刷页码"记录下来
+### 第一步：找到目录页
+- 在全文中搜索"目录"、"详目"、"Contents"等标记
+- 目录页通常位于正文之前，包含章节标题和对应页码
+- 目录是全书结构的权威来源
 
-### 第二步：定位正文中的章节
-- 在正文中定位每个目录条目的实际起始页（[P{N}]标记）
+### 第二步：从目录推断层级结构
+**仔细阅读目录的排版格式**，从中推断层级关系：
+- 观察缩进、编号模式、字体大小差异
+- 常见的层级标记（但不同书可能用不同术语！）：
+  * 卷/篇/编/部分 → 最高层
+  * 章 → 第二层
+  * 节 → 第三层
+  * 一、二、三、→ 第四层
+  * （一）（二）（三）→ 第五层
+  * 1. 2. 3. / (1) (2) (3) → 更细分
+- **重要**：不同书的术语可能完全不同！
+  * 有的书用"卷"而不是"编"
+  * 有的书用"Part/Chapter"而不是"编/章"
+  * 有的书根本没有最高层，直接从"章"开始
+  * 你必须根据这本书的具体情况动态判断
+
+### 第三步：在正文中定位章节
+- 根据目录中的标题，在正文中找到对应的实际位置（[P{N}]标记）
 - 每个章节的结束页 = 下一个同级或上级章节的起始页 - 1
-- 验证：目录标注的页码与正文[P]标记的对应关系
+- 目录标注的印刷页码可能有偏移，以正文中的[P{N}]标记为准
 
-### 第三步：分类前页和后页
+### 第四步：处理目录之外的细目标题
+对于正文中存在但目录中没有列出的标题（如"一、"、"（一）"、"1."等）：
+- 阅读上下文，判断它在层级中的位置
+- 它属于哪个节？哪个章？
+- **注意区分**：真正的层级标题 vs. 列举序号/思考题/案例编号
+  * 真正的标题：后面紧跟具体内容阐述，通常独占一行
+  * 列举序号/思考题：如"(1)乙对甲享有何种权利？"是题目，不是层级标题
+
+### 第五步：分类前页和后页
 - 目录页之前的内容是前页（封面、版权、献词、序言等）
 - 正文结束后、索引/附录/后记等是后页
-
-## 层级定义
-
-| level | 含义 | 典型格式 |
-|-------|------|---------|
-| 1 | 编/篇/部分 | "第一编 总则"、"上篇"、"Part One" |
-| 2 | 章 | "第一章 民法概述"、"Chapter 1" |
-| 3 | 节 | "第一节 民法的概念"、"§1" |
-| 4 | 小节(一、二、三) | "一、民法的渊源"、"二、民法的效力" |
-| 5 | 细目(（一）（二）) | "（一）制定法"、"（二）习惯法" |
 
 ## 内容类型
 
@@ -61,6 +81,7 @@ SYSTEM_PROMPT = """你是一位资深中文图书编辑，专精于图书结构�
 ### 正文 (body)
 - 每一条都是 chapter 类型
 - 必须包含 title、level、page_start、page_end
+- **level 必须基于你对目录的语义分析，不能照搬OCR的text_level**
 
 ### 后页 (back_matter)
 - appendix: 附录
@@ -78,48 +99,53 @@ SYSTEM_PROMPT = """你是一位资深中文图书编辑，专精于图书结构�
 1. **目录是权威来源**：章节标题必须与目录页一致（OCR可能有少量错字，选择最合理的版本）
 2. 页码标记 [P{N}] 从1开始，N对应扫描件的实际页码
 3. 目录页中列出的印刷页码仅供参考（可能有偏移），以 [P{N}] 标记为准
-4. level 4 和 level 5 的小标题通常不在目录中列出，由LLM根据正文上下文的语义关系判断
+4. level 4 和 level 5 的小标题通常不在目录中列出，需要你根据正文上下文的语义关系判断
 5. 对于"一、二、"开头的段落，判断它是否为真正的层级标题（通常后面紧跟具体内容阐述），还是单纯的列举序号
 6. 不要跳过正文的任何章节，确保 TOC 中的每个条目都有对应的 body 条目
+7. **再次强调：level 值必须来自你对目录结构的语义分析，绝对不能依赖OCR工具给出的text_level**
 """
 
 USER_PROMPT_TEMPLATE = """以下是 OCR 识别后的书籍全文。文本中 [P{N}] 标记表示第 N 页的起始位置。
 
+⚠️ 重要提示：文本中可能带有 # 标记（如 # 第一章、## 第一节），这些是OCR工具根据字号猜测的标题级别，**完全不可靠**，请不要参考这些 # 标记来判断层级。你必须通过阅读目录页来独立判断层级结构。
+
 请按照分析步骤，输出如下JSON结构：
 
 ```json
-{
-  "metadata": {
+{{
+  "metadata": {{
     "title": "书名",
     "authors": ["作者"],
     "translator": "译者（无则null）",
     "publisher": "出版社",
     "language": "zh"
-  },
+  }},
   "toc_structure": [
-    {"title": "目录条目原文", "level": 1-5, "toc_page_number": "目录标注的印刷页码"}
+    {{"title": "目录条目原文", "level": 1-5, "toc_page_number": "目录标注的印刷页码"}}
   ],
   "front_matter": [
-    {"type": "cover|copyright|dedication|toc|preface|foreword", "label": "描述", "page_start": N, "page_end": N, "keep": true}
+    {{"type": "cover|copyright|dedication|toc|preface|foreword", "label": "描述", "page_start": N, "page_end": N, "keep": true}}
   ],
   "body": [
-    {"type": "chapter", "title": "章节标题原文", "level": 1-5, "page_start": N, "page_end": N}
+    {{"type": "chapter", "title": "章节标题原文", "level": 1-5, "page_start": N, "page_end": N}}
   ],
   "back_matter": [
-    {"type": "appendix|bibliography|index|afterword", "label": "描述", "page_start": N, "page_end": N}
+    {{"type": "appendix|bibliography|index|afterword", "label": "描述", "page_start": N, "page_end": N}}
   ],
   "noise_ranges": [
-    {"type": "page_header|page_footer|scan_noise|blank_page", "description": "描述", "pages": [N, ...]}
+    {{"type": "page_header|page_footer|scan_noise|blank_page", "description": "描述", "pages": [N, ...]}}
   ],
   "toc_page_offset": N
-}
+}}
 ```
 
-`toc_page_offset`: 如果目录标注的页码与 [P{N}] 之间有固定偏移（如目录写"第1页"对应[P15]），填偏移量（=15-1=14）。无反则填0。
+`toc_page_offset`: 如果目录标注的页码与 [P{{N}}] 之间有固定偏移（如目录写"第1页"对应[P15]），填偏移量（=15-1=14）。无反则填0。
 
 注意：
 - body 中的 chapter 必须覆盖 TOC 中的所有条目，一一对应
+- **level 值必须基于你对目录结构的语义分析**（观察目录的缩进、编号模式），不要参考文本中的 # 标记
 - level 4 的小标题作为独立 chapter 条目输出，有独立的 page_start/page_end（即到下一个同级或上级标题为止）
+- 不要把思考题、案例分析题、练习题误判为层级标题（如"(1)乙对甲享有何种权利?"不是标题）
 - 所有数字字段用整数，不要用字符串
 
 === 以下是书籍全文 ===
@@ -128,7 +154,11 @@ USER_PROMPT_TEMPLATE = """以下是 OCR 识别后的书籍全文。文本中 [P{
 
 
 def _build_page_marked_text(markdown: str, content_list: list) -> str:
-    """构建带页码标记的全文。每页起始位置插入 [P{N}] 标记。"""
+    """构建带页码标记的全文。每页起始位置插入 [P{N}] 标记。
+
+    注意：不添加 # 等标题标记——MinerU 的 text_level 不可靠，
+    DeepSeek 应从文本内容和目录结构自行判断层级。
+    """
     if not content_list:
         return markdown
 
@@ -146,9 +176,7 @@ def _build_page_marked_text(markdown: str, content_list: list) -> str:
 
             if btype in ("text", "title"):
                 text = block.get("text", "")
-                level = block.get("text_level", 0)
-                if level > 0:
-                    text = f"{'#' * min(level, 6)} {text}"
+                # 不添加 # 标记，让 DeepSeek 自行判断
             elif btype == "paragraph":
                 text = block.get("text", "")
             elif btype == "image":
