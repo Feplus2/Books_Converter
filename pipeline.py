@@ -24,10 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pipeline")
 
+from pathlib import Path
+
 from stage1_mineru import run_mineru, save_mineru_metadata
 from stage2_deepseek import analyze_structure, save_structure
 from stage3_epub import generate_epub
-from config import DEFAULT_OUTPUT_DIR
 
 
 def main():
@@ -44,8 +45,8 @@ def main():
     parser.add_argument("pdf", help="PDF 文件路径")
     parser.add_argument(
         "-o", "--output-dir",
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"输出目录 (默认: {DEFAULT_OUTPUT_DIR})",
+        default=None,
+        help="输出目录 (默认: PDF 所在目录)",
     )
     parser.add_argument(
         "--no-ocr",
@@ -73,7 +74,9 @@ def main():
         sys.exit(1)
 
     book_name = pdf_path.stem
-    work_dir = Path(args.output_dir) / book_name
+    # 默认输出到 PDF 所在目录
+    output_base = Path(args.output_dir) if args.output_dir else pdf_path.parent
+    work_dir = output_base / book_name
     work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 60)
@@ -135,6 +138,13 @@ def main():
             structure,
             str(work_dir),
         )
+        # 复制一份到 PDF 同目录（方便使用）
+        final_path = pdf_path.parent / epub_path.name
+        if epub_path != final_path:
+            import shutil
+            shutil.copy2(epub_path, final_path)
+            logger.info(f"  EPUB 已复制到: {final_path}")
+            epub_path = final_path
     except Exception as e:
         logger.error(f"Stage 3 失败: {e}")
         import traceback

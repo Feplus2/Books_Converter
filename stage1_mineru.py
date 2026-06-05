@@ -70,20 +70,31 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
                         f"第 {start_page}-{end_page} 页 ...")
             t0 = time.time()
 
-            try:
-                result = client.extract(
-                    str(pdf_path),
-                    model=MINERU_MODEL,
-                    ocr=ocr,
-                    formula=MINERU_ENABLE_FORMULA,
-                    table=MINERU_ENABLE_TABLE,
-                    language=MINERU_LANGUAGE,
-                    pages=page_range,
-                    timeout=MINERU_TIMEOUT,
-                )
-            except Exception as e:
-                logger.error(f"    片 {chunk_idx + 1} API 调用失败: {e}")
-                raise
+            # 重试逻辑：处理间歇性 SSL/CDN 错误
+            result = None
+            last_error = None
+            for attempt in range(3):
+                try:
+                    result = client.extract(
+                        str(pdf_path),
+                        model=MINERU_MODEL,
+                        ocr=ocr,
+                        formula=MINERU_ENABLE_FORMULA,
+                        table=MINERU_ENABLE_TABLE,
+                        language=MINERU_LANGUAGE,
+                        pages=page_range,
+                        timeout=MINERU_TIMEOUT,
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < 2:
+                        wait = (attempt + 1) * 10
+                        logger.warning(f"    尝试 {attempt + 1} 失败，{wait}s 后重试: {e}")
+                        time.sleep(wait)
+            if result is None:
+                logger.error(f"    片 {chunk_idx + 1} 重试 3 次后仍失败: {last_error}")
+                raise last_error
 
             elapsed = time.time() - t0
             if result.state != "done":

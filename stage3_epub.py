@@ -111,6 +111,18 @@ h3 {
     margin: 1.2em 0 0.6em;
     font-weight: bold;
 }
+h4 {
+    text-align: left;
+    font-size: 1.05em;
+    margin: 1em 0 0.4em;
+    font-weight: bold;
+}
+h5 {
+    text-align: left;
+    font-size: 1.0em;
+    margin: 0.8em 0 0.3em;
+    font-weight: bold;
+}
 p {
     text-indent: 2em;
     margin: 0.3em 0;
@@ -379,40 +391,60 @@ def generate_epub(
         spine.append(chapter)
         toc_entries.append(epub.Link(chapter.file_name, fm_label, f"fm_{i}"))
 
-    # ── 正文 ──
-    for i, ch in enumerate(structure.get("body", [])):
-        ch_title = ch.get("title", f"章节 {i+1}")
+    # ── 正文 ──（层级 1-3 独立章节，层级 4-5 渲染为子标题）
+    body_items = structure.get("body", [])
+    i = 0
+    chunk_idx = 0
+
+    while i < len(body_items):
+        ch = body_items[i]
         ch_level = ch.get("level", 1)
-        ch_html = _render_pages_html(
-            ch.get("page_start", 0),
-            ch.get("page_end", 0),
-            pages,
-            images_dir,
-            noise_pages,
-        )
-        if not ch_html.strip():
-            ch_html = "<p>(空章节)</p>"
 
-        # 后处理：合并异常断裂段落 + 章节名去重
-        ch_html = _merge_broken_paragraphs(ch_html)
-        pure_name = _chapter_pure_name(ch_title)
-        ch_html = _strip_first_title_paragraph(ch_html, pure_name)
+        if ch_level <= 3:
+            # 顶层/章/节：创建独立 EPUB 章节
+            ch_title = ch.get("title", f"章节 {chunk_idx + 1}")
+            ch_html = _render_pages_html(
+                ch.get("page_start", 0),
+                ch.get("page_end", 0),
+                pages, images_dir, noise_pages,
+            )
 
-        # 章节文件
-        heading_tag = f"h{min(ch_level, 3)}"
-        safe_name = _sanitize_filename(ch_title) or f"chapter_{i+1}"
-        file_name = f"chapter_{i+1:03d}.xhtml"
+            # 收集紧跟的 level 4-5 子标题
+            j = i + 1
+            while j < len(body_items):
+                sub = body_items[j]
+                sub_level = sub.get("level", 1)
+                if sub_level >= 4:
+                    sub_title = sub.get("title", "")
+                    sub_html = _render_pages_html(
+                        sub.get("page_start", 0),
+                        sub.get("page_end", 0),
+                        pages, images_dir, noise_pages,
+                    )
+                    sub_tag = f"h{min(sub_level, 6)}"
+                    if sub_html.strip():
+                        ch_html += f"\n<{sub_tag}>{sub_title}</{sub_tag}>\n{sub_html}"
+                    j += 1
+                else:
+                    break
+            i = j
 
-        chapter = epub.EpubHtml(
-            title=ch_title,
-            file_name=file_name,
-            lang="zh",
-        )
-        chapter.content = f"<{heading_tag}>{ch_title}</{heading_tag}>\n{ch_html}"
-        chapter.add_item(css)
-        book.add_item(chapter)
-        spine.append(chapter)
-        toc_entries.append(epub.Link(file_name, ch_title, f"ch_{i}"))
+            ch_html = _merge_broken_paragraphs(ch_html)
+            pure_name = _chapter_pure_name(ch_title)
+            ch_html = _strip_first_title_paragraph(ch_html, pure_name)
+
+            heading_tag = f"h{min(ch_level, 3)}"
+            file_name = f"chapter_{chunk_idx + 1:03d}.xhtml"
+
+            chapter = epub.EpubHtml(title=ch_title, file_name=file_name, lang="zh")
+            chapter.content = f"<{heading_tag}>{ch_title}</{heading_tag}>\n{ch_html}"
+            chapter.add_item(css)
+            book.add_item(chapter)
+            spine.append(chapter)
+            toc_entries.append(epub.Link(file_name, ch_title, f"ch_{chunk_idx}"))
+            chunk_idx += 1
+        else:
+            i += 1
 
     # ── 后页 ──
     for i, bm in enumerate(structure.get("back_matter", [])):
