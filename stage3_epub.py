@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from ebooklib import epub
+import fitz  # PyMuPDF，用于渲染 PDF 首页作为封面
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -25,9 +26,17 @@ logger = logging.getLogger(__name__)
 # ── 标点与正则常量 ──────────────────────────────────────────────
 
 _SENTENCE_END = re.compile(r'[。！？…～;:。」』）\)】""\'?!]\s*$')
+# 脚注标记（①②③...）结尾 → 段落完整，不应合并
+_FOOTNOTE_END = re.compile(r'[①②③④⑤⑥⑦⑧⑨⑩]\s*$')
 _BROKEN_P = re.compile(
     r'<p>([^<]*?)</p>\s*\n?\s*<p>([^<]*?)</p>',
     re.DOTALL,
+)
+# MinerU LaTeX 风格上标：$^{①}$ $^{②}$ 等
+_LATEX_SUP = re.compile(r'\$\^\{(.+?)\}\$')
+# 脚注标记（①②③...）后紧跟编号列表项（1. 2. 等）→ 需要分段
+_FOOTNOTE_LIST_SPLIT = re.compile(
+    r'(<sup>[①②③④⑤⑥⑦⑧⑨⑩]</sup>)\s*(\d+\.)'
 )
 
 # 英文 → 中文标点映射（用于中文书籍）
@@ -45,6 +54,16 @@ _PUNCT_MAP = str.maketrans({
 def _normalize(text: str) -> str:
     """去除所有空白字符，用于标题文本比对"""
     return re.sub(r'[\s\u3000]+', '', text).strip()
+
+
+def _convert_latex_sup(text: str) -> str:
+    """将 MinerU 的 LaTeX 上标 $^{①}$ 转为 HTML <sup>①</sup>"""
+    return _LATEX_SUP.sub(r'<sup>\1</sup>', text)
+
+
+def _split_after_footnote(text: str) -> str:
+    """脚注标记（①②③）后紧跟编号列表项（如 '2.'）时，分段显示"""
+    return _FOOTNOTE_LIST_SPLIT.sub(r'\1</p>\n<p>\2', text)
 
 
 def _convert_punctuation(text: str) -> str:
@@ -72,6 +91,12 @@ def _merge_if_broken(m: re.Match) -> str:
     p1 = m.group(1).strip()
     p2 = m.group(2).strip()
     if not p2:
+        return m.group(0)
+    # 第一段以脚注标记结尾（①②③...）→ 段落完整，不合并
+    if _FOOTNOTE_END.search(p1):
+        return m.group(0)
+    # 第二段以编号开头（如 "2."、"一、"）且较短 → 可能是新条目，不合并
+    if re.match(r'^\d+[\.\、]', p2) and len(p2) <= 30:
         return m.group(0)
     # 第一段不以句末标点结尾 → 合并
     if not _SENTENCE_END.search(p1) and not _looks_like_heading(p1):
@@ -190,16 +215,20 @@ def _render_block_to_html(block: dict, images_dir: str,
             return ""
         # 无论 text_level 是多少，都渲染为 <p>
         # 标题判断由 complete_outline 负责
+        text = _convert_latex_sup(text)
         if chinese_punct:
             text = _convert_punctuation(text)
+        text = _split_after_footnote(text)
         return f"<p>{text}</p>"
 
     elif btype == "title":
         # 也渲染为 <p>，由 complete_outline 决定是否为标题
         if not text.strip():
             return ""
+        text = _convert_latex_sup(text)
         if chinese_punct:
             text = _convert_punctuation(text)
+        text = _split_after_footnote(text)
         return f"<p>{text}</p>"
 
     elif btype == "image":
@@ -359,7 +388,8 @@ def _render_chapter_html(
     """
     ch_level = ch_item.get("level", 2)
     ch_tag = f"h{min(ch_level, 2)}"
-    parts = [f'<{ch_tag} class="chapter-title">{ch_item["title"]}</{ch_tag}>']
+    ch_title_html = _convert_latex_sup(ch_item["title"])
+    parts = [f'<{ch_tag} class="chapter-title">{ch_title_html}</{ch_tag}>']
 
     # 构建标题查找表（归一化文本 → 标题信息）
     heading_lookup = {}
@@ -402,7 +432,8 @@ def _render_chapter_html(
             if normalized and normalized in heading_lookup:
                 h_info = heading_lookup[normalized]
                 htag = f"h{min(h_info['level'], 6)}"
-                parts.append(f"<{htag}>{h_info['title']}</{htag}>")
+                h_text = _convert_latex_sup(h_info['title'])
+                parts.append(f"<{htag}>{h_text}</{htag}>")
                 continue
 
             # 跳过章标题（避免重复）
@@ -439,7 +470,8 @@ def _render_pages_html(
                 text = block.get("text", "")
                 if text.strip():
                     level = block.get("text_level", 0) or 1
-                    html_parts.append(f"<h{min(level + 1, 4)}>{text}</h{min(level + 1, 4)}>")
+                    tag = f"h{min(level + 1, 4)}"
+                    html_parts.append(f"<{tag}>{_convert_latex_sup(text)}</{tag}>")
                 continue
             rendered = _render_block_to_html(block, images_dir, chinese_punct)
             if rendered:
@@ -490,6 +522,31 @@ def _collect_images(content_list: list, images_dir: str) -> list:
     return loaded
 
 
+# ── 封面提取 ────────────────────────────────────────────────────
+
+def _extract_cover_image(pdf_path: str, output_dir: str) -> Optional[str]:
+    """从 PDF 首页渲染高清封面图片
+
+    Returns:
+        封面图片路径，失败时返回 None
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc[0]
+        # 2x 缩放 = 约 144 DPI，画质足够且体积可控
+        mat = fitz.Matrix(2, 2)
+        pix = page.get_pixmap(matrix=mat)
+
+        cover_path = Path(output_dir) / "cover.jpg"
+        pix.save(str(cover_path))
+        doc.close()
+        logger.info(f"  封面: 从 PDF 首页提取 ({pix.width}x{pix.height})")
+        return str(cover_path)
+    except Exception as e:
+        logger.warning(f"  封面提取失败: {e}")
+        return None
+
+
 # ── 主函数 ──────────────────────────────────────────────────────
 
 def generate_epub(
@@ -497,6 +554,7 @@ def generate_epub(
     mineru_info: dict,
     structure: dict,
     output_dir: str,
+    pdf_path: str = "",
 ) -> Path:
     """
     生成 EPUB 文件。
@@ -506,6 +564,7 @@ def generate_epub(
         mineru_info: Stage 1 输出 {markdown, content_list, images_dir}
         structure: Stage 2 输出 {metadata, front_matter, body, back_matter, noise_ranges}
         output_dir: 输出目录
+        pdf_path: 源 PDF 路径（用于提取封面）
     """
     logger.info("Stage 3 开始: 生成 EPUB")
 
@@ -558,6 +617,14 @@ def generate_epub(
     if publisher and publisher != "null":
         book.add_metadata("DC", "publisher", publisher)
 
+    # 封面（从 PDF 首页截图）
+    cover_image_path = None
+    if pdf_path and os.path.isfile(pdf_path):
+        cover_img_path = _extract_cover_image(pdf_path, output_dir)
+        if cover_img_path and os.path.isfile(cover_img_path):
+            cover_image_path = cover_img_path
+            logger.info(f"  封面已提取: cover.jpg")
+
     # CSS
     css = epub.EpubItem(
         uid="style",
@@ -589,7 +656,9 @@ def generate_epub(
 
     # Spine 和 TOC
     spine = ["nav"]
-    toc_entries = []
+    front_toc = []       # 前页 TOC 条目（扁平）
+    body_spine_info = [] # 正文：记录 (group_idx, type, epub_obj) 用于构建嵌套 TOC
+    back_toc = []        # 后页 TOC 条目（扁平）
     chapter_idx = 0
 
     # ── 前页 ──
@@ -614,17 +683,19 @@ def generate_epub(
         chapter.add_item(css)
         book.add_item(chapter)
         spine.append(chapter)
-        toc_entries.append(epub.Link(chapter.file_name, fm_label, f"fm_{i}"))
+        front_toc.append(epub.Link(chapter.file_name, fm_label, f"fm_{i}"))
 
     # ── 正文（层级嵌套） ──
     for group in spine_groups:
         parent = group.get("parent")
         children = group["children"]
 
+        group_info = {"parent_link": None, "children_links": []}
+
         # 父级分隔页（编）
         if parent:
             divider_parts = [
-                f'<h1 class="part-title">{parent["title"]}</h1>'
+                f'<h1 class="part-title">{_convert_latex_sup(parent["title"])}</h1>'
             ]
             # 渲染编的引言页（编起始 → 第一个章起始之前）
             if children:
@@ -646,9 +717,8 @@ def generate_epub(
             divider.add_item(css)
             book.add_item(divider)
             spine.append(divider)
-            toc_entries.append(
-                epub.Link(divider.file_name, parent["title"],
-                          f"part_{chapter_idx}")
+            group_info["parent_link"] = epub.Link(
+                divider.file_name, parent["title"], f"part_{chapter_idx}"
             )
             chapter_idx += 1
 
@@ -671,10 +741,12 @@ def generate_epub(
             chapter.add_item(css)
             book.add_item(chapter)
             spine.append(chapter)
-            toc_entries.append(
+            group_info["children_links"].append(
                 epub.Link(file_name, ch_item["title"], f"ch_{chapter_idx}")
             )
             chapter_idx += 1
+
+        body_spine_info.append(group_info)
 
     # ── 后页 ──
     for i, bm in enumerate(structure.get("back_matter", [])):
@@ -696,12 +768,61 @@ def generate_epub(
         chapter.add_item(css)
         book.add_item(chapter)
         spine.append(chapter)
-        toc_entries.append(
+        back_toc.append(
             epub.Link(chapter.file_name, bm_label, f"bm_{i}")
         )
 
+    # ── 构建嵌套 TOC ──
+    toc_entries = list(front_toc)
+    for group_info in body_spine_info:
+        parent_link = group_info["parent_link"]
+        children = group_info["children_links"]
+        if parent_link and children:
+            # 有父级（编）→ 嵌套：Section(编标题, (章链接...))
+            toc_entries.append((
+                epub.Section(parent_link.title),
+                tuple(children),
+            ))
+        elif parent_link:
+            # 有父级但无子章 → 单独添加
+            toc_entries.append(parent_link)
+        else:
+            # 无父级 → 扁平添加所有章
+            toc_entries.extend(children)
+    toc_entries.extend(back_toc)
+
+    # ── 封面页 ──
+    if cover_image_path:
+        with open(cover_image_path, "rb") as f:
+            cover_data = f.read()
+        # 添加封面图片
+        cover_img_item = epub.EpubItem(
+            uid="cover-image",
+            file_name="images/cover.jpg",
+            media_type="image/jpeg",
+            content=cover_data,
+        )
+        book.add_item(cover_img_item)
+        # 添加封面页
+        cover_html = epub.EpubHtml(
+            title="封面",
+            file_name="cover.xhtml",
+            lang="zh",
+        )
+        cover_html.content = (
+            '<html><body style="text-align:center;margin:0;padding:0;">'
+            '<img src="images/cover.jpg" style="max-width:100%;max-height:100%;"/>'
+            '</body></html>'
+        )
+        cover_html.add_item(css)
+        book.add_item(cover_html)
+        # 插入到 spine 最前面（在 "nav" 之后）
+        spine.insert(1, cover_html)
+        # 封面加入 TOC 最前面
+        front_toc.insert(0, epub.Link("cover.xhtml", "封面", "cover"))
+
     # ── 组装 ──
-    book.toc = toc_entries
+    book.toc = tuple(toc_entries)
     book.spine = spine
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())

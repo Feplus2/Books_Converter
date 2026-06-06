@@ -34,12 +34,13 @@ def _count_pages(pdf_path: str) -> int:
     return n
 
 
-def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
+def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
+               progress=None) -> dict:
     """
     调用 MinerU API 解析 PDF，超大文件自动分片。
 
-    Returns:
-        dict with keys: markdown, content_list, images_dir
+    Args:
+        progress: 可选回调函数，接收字符串描述当前进度
     """
     pdf_path = Path(pdf_path)
     book_name = pdf_path.stem
@@ -58,6 +59,7 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
     all_blocks = []
     all_images = {}
     page_offset = 0
+    _report = progress or (lambda _: None)
 
     client = MinerU(MINERU_TOKEN)
     try:
@@ -66,6 +68,7 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
             end_page = min(start_page + CHUNK_SIZE - 1, total_pages)
             page_range = f"{start_page}-{end_page}"
 
+            _report(f"片 {chunk_idx + 1}/{chunks_needed}: 第 {start_page}-{end_page} 页 正在上传...")
             logger.info(f"  片 {chunk_idx + 1}/{chunks_needed}: "
                         f"第 {start_page}-{end_page} 页 ...")
             t0 = time.time()
@@ -75,6 +78,8 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
             last_error = None
             for attempt in range(3):
                 try:
+                    if attempt > 0:
+                        _report(f"片 {chunk_idx + 1}/{chunks_needed}: 重试 {attempt + 1}/3...")
                     result = client.extract(
                         str(pdf_path),
                         model=MINERU_MODEL,
@@ -112,8 +117,20 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True) -> dict:
             all_blocks.extend(blocks_chunk)
             page_offset += (end_page - start_page + 1)
 
+            # 保存图片到磁盘（MinerU SDK 以 bytes 形式返回）
+            if result.images:
+                images_out = mineru_out / "images"
+                images_out.mkdir(parents=True, exist_ok=True)
+                for img in result.images:
+                    img_file = images_out / img.name
+                    with open(img_file, "wb") as f:
+                        f.write(img.data)
+
+            _report(f"片 {chunk_idx + 1}/{chunks_needed}: 完成 — "
+                    f"{len(md_chunk):,} 字符, {len(result.images)} 张图片")
             logger.info(f"    完成: {len(md_chunk):,} 字符, "
-                        f"{len(blocks_chunk)} blocks, 耗时 {elapsed:.0f}s")
+                        f"{len(blocks_chunk)} blocks, "
+                        f"{len(result.images)} 张图片, 耗时 {elapsed:.0f}s")
 
         # 合并 markdown
         merged_md = "\n\n".join(all_markdown)

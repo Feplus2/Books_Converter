@@ -369,6 +369,7 @@ def _refine_headings(
     level_mapping: Dict[int, str],
     content_list: List[Dict],
     client: OpenAI,
+    progress=None,
 ) -> List[Dict]:
     """分批精修候选标题（Pass 2）
 
@@ -427,12 +428,14 @@ JSON 数组，每条包含：
 
     outline = []
     batch_size = 100
+    _report = progress or (lambda _: None)
 
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i : i + batch_size]
         batch_num = i // batch_size + 1
         total_batches = (len(candidates) + batch_size - 1) // batch_size
 
+        _report(f"Pass 2: 批次 {batch_num}/{total_batches} ({len(batch)} 个候选)")
         logger.info(f"    批次 {batch_num}/{total_batches}: {len(batch)} 个候选")
 
         # 构建用户提示
@@ -496,14 +499,19 @@ JSON 数组，每条包含：
     return outline
 
 
-def analyze_structure(markdown: str, content_list: list, book_name: str = "") -> dict:
+def analyze_structure(markdown: str, content_list: list, book_name: str = "",
+                     progress=None) -> dict:
     """用 DeepSeek 分析书籍结构——三阶段策略
 
     Pass 1: 读全文，输出高层结构（编/章/节）
     Pass 1.5: 从 TOC 结构提取层级映射表（锚定）
     Pass 2: 收集候选标题，分批精修，产出完整大纲（complete_outline）
+
+    Args:
+        progress: 可选回调函数，接收字符串描述当前进度
     """
     logger.info("Stage 2: DeepSeek V4 Flash TOC 引导结构分析")
+    _report = progress or (lambda _: None)
 
     book_text = _build_page_marked_text(markdown, content_list)
     text_len = len(book_text)
@@ -516,6 +524,7 @@ def analyze_structure(markdown: str, content_list: list, book_name: str = "") ->
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 
     # ── Pass 1: 高层结构分析 ──
+    _report("Pass 1: 正在分析高层结构 (编/章/节)...")
     logger.info("  Pass 1: 高层结构分析")
     user_prompt = USER_PROMPT_TEMPLATE.replace("{book_text}", book_text)
 
@@ -552,15 +561,18 @@ def analyze_structure(markdown: str, content_list: list, book_name: str = "") ->
     )
 
     # ── Pass 1.5: 层级锚定 ──
+    _report("Pass 1.5: 从目录提取层级映射...")
     toc_structure = structure.get("toc_structure", [])
     level_mapping = _extract_level_mapping(toc_structure)
     logger.info(f"  Pass 1.5: 层级映射 → {level_mapping}")
 
     # ── Pass 2: 标题精修 ──
     candidates = _collect_heading_candidates(content_list)
+    _report(f"Pass 2: 收集到 {len(candidates)} 个候选标题，开始分批精修...")
     logger.info(f"  Pass 2: 收集到 {len(candidates)} 个候选标题")
 
-    complete_outline = _refine_headings(candidates, level_mapping, content_list, client)
+    complete_outline = _refine_headings(candidates, level_mapping, content_list, client,
+                                        progress=progress)
 
     # 将 complete_outline 添加到 structure
     structure["complete_outline"] = complete_outline

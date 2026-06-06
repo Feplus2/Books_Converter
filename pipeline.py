@@ -14,6 +14,7 @@ Books_Converter — PDF → EPUB 全自动转换管线
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 # 配置日志
@@ -29,6 +30,7 @@ from pathlib import Path
 from stage1_mineru import run_mineru, save_mineru_metadata
 from stage2_deepseek import analyze_structure, save_structure
 from stage3_epub import generate_epub
+from progress_ui import ProgressWindow
 
 
 def main():
@@ -87,75 +89,129 @@ def main():
     logger.info(f"  OCR: {'强制' if args.ocr else '自动'}")
     logger.info("=" * 60)
 
-    # ═══ Stage 1: MinerU ══════════════════════════════════════
-    mineru_info = None
-    if not args.skip_mineru:
-        try:
-            mineru_info = run_mineru(str(pdf_path), str(work_dir), ocr=args.ocr)
-            save_mineru_metadata(str(work_dir), mineru_info)
-        except Exception as e:
-            logger.error(f"Stage 1 失败: {e}")
-            logger.error("请检查: ① 网络连接 ② API Token 是否有效 ③ PDF 是否损坏")
-            sys.exit(1)
-    else:
-        # 尝试加载已有结果
-        logger.info("跳过 Stage 1，使用已有 MinerU 结果")
-        mineru_info = _load_mineru_cache(work_dir)
-        if not mineru_info:
-            logger.error("未找到已有 MinerU 结果，请先运行 Stage 1")
-            sys.exit(1)
+    # ── 启动进度窗口 ──
+    pw = ProgressWindow(book_name)
+    pw.start()
 
-    # ═══ Stage 2: DeepSeek 结构分析 ════════════════════════════
-    structure = None
-    if not args.skip_deepseek:
-        try:
-            structure = analyze_structure(
-                mineru_info["markdown"],
-                mineru_info["content_list"],
-                book_name,
-            )
-            save_structure(structure, str(work_dir))
-        except Exception as e:
-            logger.error(f"Stage 2 失败: {e}")
-            logger.error("将使用 MinerU 原始结构继续生成 EPUB...")
-            structure = _fallback_structure(mineru_info, book_name)
-    else:
-        structure_path = work_dir / "structure.json"
-        if structure_path.exists():
-            import json
-            with open(structure_path, "r", encoding="utf-8") as f:
-                structure = json.load(f)
-            logger.info(f"加载已有结构分析: {structure_path}")
-        else:
-            logger.error("未找到 structure.json，请先运行 Stage 2")
-            sys.exit(1)
+    total_start = time.time()
+    stage_times = {}
 
-    # ═══ Stage 3: EPUB 生成 ════════════════════════════════════
     try:
-        epub_path = generate_epub(
-            book_name,
-            mineru_info,
-            structure,
-            str(work_dir),
-        )
-        # 复制一份到 PDF 同目录（方便使用）
-        final_path = pdf_path.parent / epub_path.name
-        if epub_path != final_path:
-            import shutil
-            shutil.copy2(epub_path, final_path)
-            logger.info(f"  EPUB 已复制到: {final_path}")
-            epub_path = final_path
-    except Exception as e:
-        logger.error(f"Stage 3 失败: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        # ═══ Stage 1: MinerU ══════════════════════════════════════
+        mineru_info = None
+        if not args.skip_mineru:
+            pw.update_stage(1, "MinerU", "正在准备 PDF 解析...")
+            t0 = time.time()
+            try:
+                mineru_info = run_mineru(
+                    str(pdf_path), str(work_dir), ocr=args.ocr,
+                    progress=lambda detail: pw.update_stage(1, "MinerU", detail),
+                )
+                save_mineru_metadata(str(work_dir), mineru_info)
+            except Exception as e:
+                logger.error(f"Stage 1 失败: {e}")
+                logger.error("请检查: ① 网络连接 ② API Token 是否有效 ③ PDF 是否损坏")
+                sys.exit(1)
+            stage_times["MinerU"] = time.time() - t0
+            pw.complete_stage(1, "MinerU", stage_times["MinerU"])
+        else:
+            # 尝试加载已有结果
+            logger.info("跳过 Stage 1，使用已有 MinerU 结果")
+            mineru_info = _load_mineru_cache(work_dir)
+            if not mineru_info:
+                logger.error("未找到已有 MinerU 结果，请先运行 Stage 1")
+                sys.exit(1)
+            pw.complete_stage(1, "MinerU (缓存)", 0)
 
-    logger.info("=" * 60)
-    logger.info(f"  ✅ 转换完成!")
-    logger.info(f"  EPUB: {epub_path}")
-    logger.info("=" * 60)
-    return epub_path
+        # ═══ Stage 2: DeepSeek 结构分析 ════════════════════════════
+        structure = None
+        if not args.skip_deepseek:
+            pw.update_stage(2, "DeepSeek", "正在准备语义分析...")
+            t0 = time.time()
+            try:
+                structure = analyze_structure(
+                    mineru_info["markdown"],
+                    mineru_info["content_list"],
+                    book_name,
+                    progress=lambda detail: pw.update_stage(2, "DeepSeek", detail),
+                )
+                save_structure(structure, str(work_dir))
+            except Exception as e:
+                logger.error(f"Stage 2 失败: {e}")
+                logger.error("将使用 MinerU 原始结构继续生成 EPUB...")
+                structure = _fallback_structure(mineru_info, book_name)
+            stage_times["DeepSeek"] = time.time() - t0
+            pw.complete_stage(2, "DeepSeek", stage_times["DeepSeek"])
+        else:
+            structure_path = work_dir / "structure.json"
+            if structure_path.exists():
+                import json
+                with open(structure_path, "r", encoding="utf-8") as f:
+                    structure = json.load(f)
+                logger.info(f"加载已有结构分析: {structure_path}")
+            else:
+                logger.error("未找到 structure.json，请先运行 Stage 2")
+                sys.exit(1)
+            pw.complete_stage(2, "DeepSeek (缓存)", 0)
+
+        # ═══ Stage 3: EPUB 生成 ════════════════════════════════════
+        pw.update_stage(3, "EPUB 生成", "渲染章节 HTML、构建嵌套 TOC、打包...")
+        t0 = time.time()
+        try:
+            epub_path = generate_epub(
+                book_name,
+                mineru_info,
+                structure,
+                str(work_dir),
+                pdf_path=str(pdf_path),
+            )
+            # 复制一份到 PDF 同目录（方便使用）
+            final_path = pdf_path.parent / epub_path.name
+            if epub_path != final_path:
+                import shutil
+                shutil.copy2(epub_path, final_path)
+                logger.info(f"  EPUB 已复制到: {final_path}")
+                epub_path = final_path
+        except Exception as e:
+            logger.error(f"Stage 3 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        stage_times["EPUB"] = time.time() - t0
+        pw.complete_stage(3, "EPUB 生成", stage_times["EPUB"])
+
+        # ═══ 完成 ═════════════════════════════════════════════
+        total_elapsed = time.time() - total_start
+        epub_size_kb = epub_path.stat().st_size / 1024 if epub_path.exists() else 0
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"  ✅ 转换完成!")
+        logger.info(f"  📕 EPUB: {epub_path} ({epub_size_kb:.0f} KB)")
+        logger.info("")
+        logger.info(f"  ⏱  耗时摘要:")
+        for stage, t in stage_times.items():
+            logger.info(f"     {stage:<12} {t:.0f}s")
+        logger.info(f"     {'总计':<12} {total_elapsed:.0f}s")
+        logger.info("=" * 60)
+
+        pw.finish(str(epub_path.name), total_elapsed)
+
+        # 声音提示
+        try:
+            import winsound
+            winsound.Beep(1000, 500)
+        except Exception:
+            pass
+
+        return epub_path
+
+    except SystemExit:
+        pw.close()
+        raise
+    except KeyboardInterrupt:
+        pw.close()
+        raise
 
 
 def _load_mineru_cache(work_dir: Path) -> dict | None:
