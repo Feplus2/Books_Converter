@@ -27,8 +27,8 @@ logger = logging.getLogger("pipeline")
 
 from pathlib import Path
 
-from stage1_mineru import run_mineru, save_mineru_metadata
-from stage2_deepseek import analyze_structure, save_structure
+from stage1_mineru import run_mineru, save_mineru_metadata, _count_pages
+from stage2_hybrid import analyze_structure_hybrid, save_structure
 from stage3_epub import generate_epub
 from progress_ui import ProgressWindow
 
@@ -65,7 +65,22 @@ def main():
     parser.add_argument(
         "--skip-deepseek",
         action="store_true",
-        help="跳过 DeepSeek 结构分析（使用已有 structure.json）",
+        help="跳过结构分析阶段（使用已有 structure.json）",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        metavar="N",
+        help="仅调试用：结构分析只处理前 N 页（技术验证切片，大幅缩短时间）",
+    )
+    parser.add_argument(
+        "--translate",
+        nargs="?",
+        const="zh",
+        default=None,
+        metavar="LANG",
+        help="翻译全书（Stage 4，DeepSeek 分批+上下文）。不带参数默认译为中文",
     )
 
     args = parser.parse_args()
@@ -89,8 +104,22 @@ def main():
     logger.info(f"  OCR: {'强制' if args.ocr else '自动'}")
     logger.info("=" * 60)
 
-    # ── 启动进度窗口 ──
-    pw = ProgressWindow(book_name)
+    # ── 启动进度窗口（按实测速率预估各阶段耗时，校准进度条） ──
+    try:
+        total_pages = _count_pages(str(pdf_path))
+    except Exception:
+        total_pages = 300
+    if args.skip_mineru:
+        est_s1 = 1.0
+    else:
+        est_s1 = max(total_pages * 0.80, 30)      # 两书实测均值 ≈ 0.80 s/页
+    est_s2 = max(total_pages * 0.14, 15)          # hybrid 两书实测均值 ≈ 0.14 s/页
+    # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
+    est_s3 = max(total_pages * 2.0, 30) if args.translate else 3.0
+    est_list = [est_s1, est_s2, est_s3, 3.0] if args.translate else [est_s1, est_s2, 3.0]
+    pw = ProgressWindow(book_name, engine="hybrid",
+                        stage_estimates=est_list,
+                        translate=bool(args.translate))
     pw.start()
 
     total_start = time.time()
@@ -105,7 +134,7 @@ def main():
             try:
                 mineru_info = run_mineru(
                     str(pdf_path), str(work_dir), ocr=args.ocr,
-                    progress=lambda detail: pw.update_stage(1, "MinerU", detail),
+                    progress=lambda detail, fraction=None: pw.update_stage(1, "MinerU", detail, fraction),
                 )
                 save_mineru_metadata(str(work_dir), mineru_info)
             except Exception as e:
@@ -123,25 +152,26 @@ def main():
                 sys.exit(1)
             pw.complete_stage(1, "MinerU (缓存)", 0)
 
-        # ═══ Stage 2: DeepSeek 结构分析 ════════════════════════════
+        # ═══ Stage 2: 结构分析（Hybrid 引擎） ════════════════════════
         structure = None
         if not args.skip_deepseek:
-            pw.update_stage(2, "DeepSeek", "正在准备语义分析...")
+            pw.update_stage(2, "Hybrid", "正在准备结构分析...")
             t0 = time.time()
             try:
-                structure = analyze_structure(
-                    mineru_info["markdown"],
+                structure = analyze_structure_hybrid(
                     mineru_info["content_list"],
                     book_name,
-                    progress=lambda detail: pw.update_stage(2, "DeepSeek", detail),
+                    str(work_dir),
+                    progress=lambda detail, fraction=None: pw.update_stage(2, "Hybrid", detail, fraction),
+                    max_pages=args.max_pages,
                 )
                 save_structure(structure, str(work_dir))
             except Exception as e:
-                logger.error(f"Stage 2 失败: {e}")
+                logger.error(f"Stage 2 (Hybrid) 失败: {e}")
                 logger.error("将使用 MinerU 原始结构继续生成 EPUB...")
                 structure = _fallback_structure(mineru_info, book_name)
-            stage_times["DeepSeek"] = time.time() - t0
-            pw.complete_stage(2, "DeepSeek", stage_times["DeepSeek"])
+            stage_times["Hybrid"] = time.time() - t0
+            pw.complete_stage(2, "Hybrid", stage_times["Hybrid"])
         else:
             structure_path = work_dir / "structure.json"
             if structure_path.exists():
@@ -154,8 +184,34 @@ def main():
                 sys.exit(1)
             pw.complete_stage(2, "DeepSeek (缓存)", 0)
 
+        # ═══ Stage 4: 全书翻译（可选） ════════════════════════════════
+        translations = None
+        s_epub = 4 if args.translate else 3
+        if args.translate:
+            from stage4_translate import translate_book
+            pw.update_stage(3, "翻译", "分批翻译中（带上下文与译名表）...")
+            t0 = time.time()
+            try:
+                result = translate_book(
+                    mineru_info["content_list"],
+                    structure.get("metadata", {}),
+                    str(work_dir),
+                    target_lang=args.translate,
+                    progress=lambda detail, fraction=None: pw.update_stage(3, "翻译", detail, fraction),
+                )
+                translations = result["translations"]
+                if result.get("title_zh"):
+                    structure["metadata"]["title"] = result["title_zh"]
+                if args.translate == "zh":
+                    structure["metadata"]["language"] = "zh"
+            except Exception as e:
+                logger.error(f"Stage 4 翻译失败: {e}，将输出原文 EPUB")
+                translations = None
+            stage_times["翻译"] = time.time() - t0
+            pw.complete_stage(3, "翻译", stage_times["翻译"])
+
         # ═══ Stage 3: EPUB 生成 ════════════════════════════════════
-        pw.update_stage(3, "EPUB 生成", "渲染章节 HTML、构建嵌套 TOC、打包...")
+        pw.update_stage(s_epub, "EPUB 生成", "渲染章节 HTML、构建嵌套 TOC、打包...")
         t0 = time.time()
         try:
             epub_path = generate_epub(
@@ -164,6 +220,7 @@ def main():
                 structure,
                 str(work_dir),
                 pdf_path=str(pdf_path),
+                translations=translations,
             )
             # 复制一份到 PDF 同目录（方便使用）
             final_path = pdf_path.parent / epub_path.name
@@ -178,7 +235,7 @@ def main():
             traceback.print_exc()
             sys.exit(1)
         stage_times["EPUB"] = time.time() - t0
-        pw.complete_stage(3, "EPUB 生成", stage_times["EPUB"])
+        pw.complete_stage(s_epub, "EPUB 生成", stage_times["EPUB"])
 
         # ═══ 完成 ═════════════════════════════════════════════
         total_elapsed = time.time() - total_start
@@ -197,10 +254,11 @@ def main():
 
         pw.finish(str(epub_path.name), total_elapsed)
 
-        # 声音提示
+        # 声音提示：清脆的上行琶音（C6-E6-G6-C7）
         try:
             import winsound
-            winsound.Beep(1000, 500)
+            for freq, dur in ((1046, 110), (1319, 110), (1568, 110), (2093, 260)):
+                winsound.Beep(freq, dur)
         except Exception:
             pass
 

@@ -3,3 +3,6 @@ openai>=1.0.0
 ebooklib>=0.18
 Pillow>=10.0
 PyMuPDF>=1.27
+beautifulsoup4>=4.12
+latex2mathml>=3.75
+tkinterdnd2>=0.4

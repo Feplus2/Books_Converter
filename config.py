@@ -58,3 +58,8 @@ MINERU_LANGUAGE = _env("MINERU_LANGUAGE", "ch")
 MINERU_TIMEOUT = int(_env("MINERU_TIMEOUT", "900"))
 MINERU_ENABLE_FORMULA = _env_bool("MINERU_ENABLE_FORMULA", True)
 MINERU_ENABLE_TABLE = _env_bool("MINERU_ENABLE_TABLE", True)
+
+# ============================================================
+# 结构分析参数（分块推理的动态分块目标页数）
+# ============================================================
+CHUNK_SIZE = int(_env("CHUNK_SIZE", "12"))

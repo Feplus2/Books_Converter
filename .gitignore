@@ -4,6 +4,12 @@
 # 输出目录
 output/
 
+# Popo 模型权重（~17GB，自行下载）
+models/
+
+# GUI 本地设置（含 API 密钥，切勿提交！）
+gui_settings.json
+
 # Python
 __pycache__/
 *.pyc
