@@ -10,6 +10,11 @@ models/
 # GUI 本地设置（含 API 密钥，切勿提交！）
 gui_settings.json
 
+# PyInstaller 构建产物
+build/
+dist/
+*.zip
+
 # Python
 __pycache__/
 *.pyc

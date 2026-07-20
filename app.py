@@ -43,7 +43,12 @@ logging.basicConfig(level=logging.INFO,
                     datefmt="%H:%M:%S")
 logger = logging.getLogger("gui")
 
-APP_DIR = Path(__file__).parent
+# PyInstaller 打包（frozen）时：设置文件放 exe 同目录（用户可写）；
+# 源码运行时：放项目根目录
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).parent
+else:
+    APP_DIR = Path(__file__).parent
 SETTINGS_PATH = APP_DIR / "gui_settings.json"
 
 _RED = "#A6453A"      # 失败状态
@@ -254,10 +259,16 @@ STRINGS = {
 # ════════════════════════════════════════════════════════════
 
 def _default_settings() -> dict:
+    # frozen（PyInstaller 打包）时：不读取打包者机器的环境变量，
+    # 避免把构建机的密钥预填给最终用户（泄露事故）。
+    if getattr(sys, "frozen", False):
+        mineru_token, llm_key = "", ""
+    else:
+        mineru_token, llm_key = config.MINERU_TOKEN or "", config.DEEPSEEK_API_KEY or ""
     return {
-        "mineru_token": config.MINERU_TOKEN or "",
+        "mineru_token": mineru_token,
         "llm_base_url": config.DEEPSEEK_BASE_URL or "https://api.deepseek.com",
-        "llm_key": config.DEEPSEEK_API_KEY or "",
+        "llm_key": llm_key,
         "llm_model": config.DEEPSEEK_MODEL or "deepseek-v4-flash",
         "ocr": True,
         "translate": False,
