@@ -59,7 +59,7 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
     all_blocks = []
     all_images = {}
     page_offset = 0
-    _report = progress or (lambda _: None)
+    _report = progress or (lambda *a, **kw: None)
 
     client = MinerU(MINERU_TOKEN)
     try:
@@ -68,7 +68,8 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
             end_page = min(start_page + CHUNK_SIZE - 1, total_pages)
             page_range = f"{start_page}-{end_page}"
 
-            _report(f"片 {chunk_idx + 1}/{chunks_needed}: 第 {start_page}-{end_page} 页 正在上传...")
+            _report(f"片 {chunk_idx + 1}/{chunks_needed}: 第 {start_page}-{end_page} 页 正在上传...",
+                    chunk_idx / chunks_needed)
             logger.info(f"  片 {chunk_idx + 1}/{chunks_needed}: "
                         f"第 {start_page}-{end_page} 页 ...")
             t0 = time.time()
@@ -127,7 +128,8 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
                         f.write(img.data)
 
             _report(f"片 {chunk_idx + 1}/{chunks_needed}: 完成 — "
-                    f"{len(md_chunk):,} 字符, {len(result.images)} 张图片")
+                    f"{len(md_chunk):,} 字符, {len(result.images)} 张图片",
+                    (chunk_idx + 1) / chunks_needed)
             logger.info(f"    完成: {len(md_chunk):,} 字符, "
                         f"{len(blocks_chunk)} blocks, "
                         f"{len(result.images)} 张图片, 耗时 {elapsed:.0f}s")

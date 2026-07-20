@@ -11,6 +11,7 @@ Stage 3: EPUB 生成
 MinerU 的 text_level 不可靠——所有标题由 DeepSeek 结构分析提供。
 """
 
+import json
 import logging
 import os
 import re
@@ -38,7 +39,61 @@ _LATEX_SUP = re.compile(r'\$\^\{(.+?)\}\$')
 _FOOTNOTE_LIST_SPLIT = re.compile(
     r'(<sup>[①②③④⑤⑥⑦⑧⑨⑩]</sup>)\s*(\d+\.)'
 )
+# 顶层标题是"编/篇/卷/部"类大分区的用词特征（中/英/德/法）
+_PARTITION_HINT = re.compile(
+    r'^(第\s*[一二三四五六七八九十百零〇0-9]+\s*[编篇卷部]'
+    r'|part\b|volume\b|book\s+[ivx0-9]|teil\b|partie\b|tome\b)',
+    re.I,
+)
+# "章"级标题的用词特征
+_CHAPTER_HINT = re.compile(
+    r'^(第\s*[一二三四五六七八九十百零〇0-9]+\s*章'
+    r'|chapter\b|kapitel\b|chapitre\b)',
+    re.I,
+)
 
+
+def _spine_from_toc(toc_entries: list) -> tuple:
+    """从目录条目的用词形状确定 (partition_level, spine_level)。
+
+    目录条目层级是绝对真值（编=L1 章=L2 节=L3…），比按正文标题
+    用词猜测稳健——正文切片里可能没有顶层标题（如只切了第一章）。
+    无匹配时返回 (None, None)，调用方回退到启发式。
+    """
+    part_lv = chap_lv = None
+    for e in toc_entries or []:
+        text = (e.get("text") or "").strip()
+        try:
+            lv = int(e.get("level", 0))
+        except (TypeError, ValueError):
+            continue
+        if lv <= 0:
+            continue
+        if _PARTITION_HINT.match(text):
+            part_lv = lv if part_lv is None else min(part_lv, lv)
+        elif _CHAPTER_HINT.match(text):
+            chap_lv = lv if chap_lv is None else min(chap_lv, lv)
+    if part_lv is not None and chap_lv is not None and part_lv >= chap_lv:
+        part_lv = None  # 层级异常时宁可不分编
+    return part_lv, chap_lv
+
+# 页脚注编号（① ② … / 1. / [1] 等开头）
+_FN_MARK = re.compile(r'^\s*([①②③④⑤⑥⑦⑧⑨⑩]|\d{1,2}[.、]|\[\d{1,2}\])')
+
+
+def _fn_marker_of(text: str) -> str | None:
+    """从脚注文本开头提取编号：$^{a}$（MinerU 上标）/ ① / 1. / [1] / a. / a)"""
+    t = (text or "").strip()
+    m = re.match(r"^\$\^\{(.+?)\}\$", t)
+    if m:
+        return m.group(1)
+    m = _FN_MARK.match(t)
+    if m:
+        return m.group(1)
+    m = re.match(r"^([a-z])[.)]\s", t)
+    if m:
+        return m.group(1)
+    return None
 # 英文 → 中文标点映射（用于中文书籍）
 _PUNCT_MAP = str.maketrans({
     ',': '，',
@@ -66,14 +121,64 @@ def _split_after_footnote(text: str) -> str:
     return _FOOTNOTE_LIST_SPLIT.sub(r'\1</p>\n<p>\2', text)
 
 
+# 行内/行间公式（标点转换时保护，不把数学里的半角符号转成全角）
+_MATH_SPAN = re.compile(r'(\$\$.*?\$\$|\$[^$\n]+\$)', re.DOTALL)
+# 公式转换用完整匹配：group(1)=行间 $$..$$, group(2)=行内 $..$
+_MATH_FULL = re.compile(r'\$\$(.+?)\$\$|\$([^$\n]+?)\$', re.DOTALL)
+
+
 def _convert_punctuation(text: str) -> str:
-    """将英文标点转为中文标点（仅用于含中文的文本）"""
+    """将英文标点转为中文标点（仅用于含中文的文本，公式段跳过）"""
     if not re.search(r'[\u4e00-\u9fff]', text):
         return text
-    text = text.translate(_PUNCT_MAP)
-    # 句号：避免误转数字中的点（如 3.14）
-    text = re.sub(r'(?<!\d)\.(?!\d)', '。', text)
-    return text
+    # 按公式段切分：偶数段为普通文本（做转换），奇数段为数学（原样保留）
+    parts = _MATH_SPAN.split(text)
+    for i in range(0, len(parts), 2):
+        parts[i] = parts[i].translate(_PUNCT_MAP)
+        # 句号：避免误转数字中的点（如 3.14）
+        parts[i] = re.sub(r'(?<!\d)\.(?!\d)', '。', parts[i])
+    return ''.join(parts)
+
+
+def _escape_attr(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _latex_to_mathml(latex: str, display: bool) -> str:
+    """LaTeX → MathML（失败返回 None）。"""
+    try:
+        from latex2mathml.converter import convert as _l2m
+        mathml = _l2m(latex)
+        # 注入源码备份（阅读器不支持 MathML 时的兜底文本）与显示模式
+        mode = "block" if display else "inline"
+        mathml = mathml.replace(
+            "<math ",
+            f'<math alttext="{_escape_attr(latex)}" display="{mode}" ',
+            1,
+        )
+        return mathml
+    except Exception:
+        return None
+
+
+def _mathmlify(html_text: str) -> str:
+    """把文本中的 $…$ / $$…$$ 公式替换为 MathML；失败的保留 LaTeX 源码。
+
+    EPUB 3 官方数学方案（calibre/Apple Books/Thorium 支持）；
+    alttext 带 LaTeX 源码兜底，latex2mathml 转不动的表达式退化为 <code>。
+    """
+    def repl(m):
+        latex = (m.group(1) or m.group(2) or "").strip()
+        display = m.group(1) is not None
+        if not latex:
+            return m.group(0)
+        mathml = _latex_to_mathml(latex, display)
+        if mathml is not None:
+            return mathml
+        return f'<code class="latex">{_escape_attr(latex)}</code>'
+
+    return _MATH_FULL.sub(repl, html_text)
 
 
 # ── 段落合并 ────────────────────────────────────────────────────
@@ -182,15 +287,45 @@ blockquote {
     margin: 1em 2em;
     color: #555;
 }
+p.footnote {
+    font-size: 0.85em;
+    text-indent: 0;
+    margin: 0.2em 0;
+    color: #555;
+}
+aside.footnotes hr {
+    width: 30%;
+    margin: 1.5em 0 0.8em 0;
+    border: none;
+    border-top: 1px solid #ccc;
+}
+sup {
+    font-size: 0.75em;
+}
+code.latex {
+    font-family: "Cambria Math", "Palatino Linotype", serif;
+    font-size: 0.95em;
+    background: #f5f5f5;
+    padding: 0 2px;
+}
+math {
+    font-size: 1.05em;
+}
+math[display="block"] {
+    display: block;
+    text-align: center;
+    margin: 0.8em 0;
+}
 """
 
 
 # ── 内容分类 ────────────────────────────────────────────────────
 
 def _classify_blocks_by_page(content_list: list) -> dict:
-    """将 content_list 按页码分组（1-based 页码）"""
+    """将 content_list 按页码分组（1-based 页码），保留原始索引供译文查找"""
     pages = {}
-    for block in content_list:
+    for idx, block in enumerate(content_list):
+        block["_idx"] = str(idx)
         page = block.get("page_idx", 0) + 1
         if page not in pages:
             pages[page] = []
@@ -198,14 +333,30 @@ def _classify_blocks_by_page(content_list: list) -> dict:
     return pages
 
 
+def _translation_of(block: dict, translations: dict | None) -> str | None:
+    """按 source_id 查译文（含 .capN 后缀回退到父块）"""
+    if not translations:
+        return None
+    sid = str(block.get("source_id", ""))
+    key = sid.rsplit(":", 1)[-1]
+    zh = translations.get(key)
+    if zh is None and ("." in key):
+        zh = translations.get(key.split(".")[0])
+    if zh is None:
+        zh = translations.get(block.get("_idx", ""))
+    return zh
+
+
 # ── Block → HTML 渲染 ──────────────────────────────────────────
 
 def _render_block_to_html(block: dict, images_dir: str,
-                          chinese_punct: bool = False) -> str:
+                          chinese_punct: bool = False,
+                          translations: dict = None) -> str:
     """将单个 content block 渲染为 HTML。
 
     核心原则：**永不丢弃内容**。所有 block 都有 HTML 输出。
     标题判断由 `complete_outline` 负责，此处只做忠实渲染。
+    translations 提供时优先使用译文（仅文本类 block）。
     """
     btype = block.get("type", "")
     text = block.get("text", "")
@@ -213,11 +364,11 @@ def _render_block_to_html(block: dict, images_dir: str,
     if btype in ("text", "paragraph"):
         if not text.strip():
             return ""
-        # 无论 text_level 是多少，都渲染为 <p>
-        # 标题判断由 complete_outline 负责
+        text = _translation_of(block, translations) or text
         text = _convert_latex_sup(text)
         if chinese_punct:
             text = _convert_punctuation(text)
+        text = _mathmlify(text)
         text = _split_after_footnote(text)
         return f"<p>{text}</p>"
 
@@ -225,9 +376,11 @@ def _render_block_to_html(block: dict, images_dir: str,
         # 也渲染为 <p>，由 complete_outline 决定是否为标题
         if not text.strip():
             return ""
+        text = _translation_of(block, translations) or text
         text = _convert_latex_sup(text)
         if chinese_punct:
             text = _convert_punctuation(text)
+        text = _mathmlify(text)
         text = _split_after_footnote(text)
         return f"<p>{text}</p>"
 
@@ -457,6 +610,7 @@ def _render_pages_html(
     images_dir: str,
     noise_pages: set,
     chinese_punct: bool = False,
+    translations: dict = None,
 ) -> str:
     """渲染指定页码范围的纯内容（无标题覆写，用于前页/后页/分隔页）"""
     html_parts = []
@@ -467,16 +621,454 @@ def _render_pages_html(
             btype = block.get("type", "")
             # 前页/后页中跳过 title 块（直接渲染为段落）
             if btype == "title":
-                text = block.get("text", "")
+                text = _translation_of(block, translations) or block.get("text", "")
                 if text.strip():
                     level = block.get("text_level", 0) or 1
                     tag = f"h{min(level + 1, 4)}"
                     html_parts.append(f"<{tag}>{_convert_latex_sup(text)}</{tag}>")
                 continue
-            rendered = _render_block_to_html(block, images_dir, chinese_punct)
+            rendered = _render_block_to_html(block, images_dir, chinese_punct,
+                                             translations)
             if rendered:
                 html_parts.append(rendered)
     return "\n".join(html_parts)
+
+
+# ── Popo 引擎渲染 ─────────────────────────────────────────────
+
+def _body_range(structure: dict, total_pages: int) -> tuple:
+    """正文页码范围：front_matter 之后 ~ back_matter 之前"""
+    start = 1
+    for fm in structure.get("front_matter", []):
+        try:
+            start = max(start, int(fm.get("page_end", 0)) + 1)
+        except (TypeError, ValueError):
+            pass
+    end = total_pages
+    for bm in structure.get("back_matter", []):
+        try:
+            ps = int(bm.get("page_start", 0))
+        except (TypeError, ValueError):
+            continue
+        if ps > 0:
+            end = min(end, ps - 1)
+    return start, max(end, start)
+
+
+def _dehyphen_join(left: str, right: str) -> str:
+    """跨页段落拼接：处理英文断词连字符与词间空格"""
+    if left.endswith("-") and right[:1].isascii() and right[:1].isalpha():
+        return left[:-1] + right
+    if left and right:
+        # 两边都是 ASCII 字母/数字 → 补空格；含 CJK → 直接连
+        if (left[-1].isascii() and left[-1].isalnum()
+                and right[0].isascii() and right[0].isalnum()):
+            return left + " " + right
+    return left + right
+
+
+def _build_toc_lookup(toc_entries: list) -> dict:
+    """目录条目 → 查找表：归一化文本 → 清理后的展示文本（去页码/点线）"""
+    lookup = {}
+    for e in toc_entries or []:
+        raw = (e.get("text") or "").strip()
+        if not raw:
+            continue
+        display = re.sub(r'[\s.…·_]+\d+\s*$', '', raw).strip()
+        key = _normalize(display)
+        if key and key not in lookup:
+            lookup[key] = display
+    return lookup
+
+
+def _enrich_title(title: str, toc_lookup: dict) -> str:
+    """裸标题（'第一章'）→ 目录完整标题（'第一章 蠢材的天堂'）。
+
+    精确归一化匹配直接采用；否则取以裸标题为前缀的最长目录条目。
+    无匹配则保留原标题。
+    """
+    key = _normalize(title)
+    if not key or not toc_lookup:
+        return title
+    best = None
+    for k, display in toc_lookup.items():
+        if k == key:
+            return display
+        if k.startswith(key) and len(k) > len(key):
+            if best is None or len(k) > len(best[0]):
+                best = (k, display)
+    return best[1] if best else title
+
+
+def _render_popo_body(popo_blocks: list, content_list: list,
+                      body_start: int, body_end: int,
+                      chinese_punct: bool, default_title: str,
+                      toc_entries: list = None,
+                      translations: dict = None) -> list:
+    """线性遍历 Popo 标注 blocks，按层级切成 编(divider)/章(chapter) 单元。
+
+    返回 units 列表：
+      {"kind": "divider"|"chapter", "title": str, "level": int,
+       "parts": [html...], "subs": [(level, title, anchor)]}
+
+    应用的 Popo 标注：
+    - title + level → 编/章边界或章内子标题（h{level}，带锚点）
+    - contd → 跨页段落拼接（目标块并入上一段，不断开）
+    - table_merge → 跨页表格已合并（merge_cross_page_tables）
+    - image 关联 → caption/footnote 挂到所属图表下
+    """
+    from popo.table_merge_utils import merge_cross_page_tables
+
+    blocks = [b for b in popo_blocks
+              if body_start <= b.get("page", 0) <= body_end]
+    blocks = merge_cross_page_tables(blocks)
+
+    # contd 目标集合：id 在其中的块是上一段的跨页延续
+    contd_targets = {b["contd"] for b in blocks if b.get("contd", -1) >= 0}
+
+    # popo block id → MinerU 图片文件名（经 source_id 映射回 content_list）
+    img_lookup = {}
+    for b in blocks:
+        if b.get("type") != "image":
+            continue
+        try:
+            idx = int(str(b.get("source_id", "")).rsplit(":", 1)[1])
+            src = content_list[idx]
+            img_path = src.get("img_path", "") or src.get("image_path", "")
+            if img_path:
+                img_lookup[b["id"]] = Path(img_path).name
+        except (ValueError, IndexError, TypeError):
+            pass
+
+    # caption/footnote 两阶段：先收集关联到视觉块的，孤儿按普通段落渲染
+    caption_types = ("image_caption", "table_caption")
+    footnote_types = ("image_footnote", "table_footnote")
+    caption_map = {}
+    footnote_map = {}
+    for b in blocks:
+        btype = b.get("type", "")
+        text = (b.get("content") or "").strip()
+        if not text:
+            continue
+        target = b.get("image", -1)
+        text = _translation_of(b, translations) or text
+        if btype in caption_types and target >= 0:
+            caption_map.setdefault(target, []).append(text)
+        elif btype in footnote_types and target >= 0:
+            footnote_map.setdefault(target, []).append(text)
+
+    def convert(text: str) -> str:
+        text = _convert_latex_sup(text)
+        if chinese_punct:
+            text = _convert_punctuation(text)
+        return text
+
+    # 页脚注收集：page → [{marker, text, claimed}]（type=page_footnote 的块）
+    page_fn_map = {}
+    for b in blocks:
+        if b.get("type") != "page_footnote":
+            continue
+        t = (b.get("content") or "").strip()
+        if not t:
+            continue
+        page_fn_map.setdefault(b.get("page", 0), []).append({
+            "marker": _fn_marker_of(t),
+            "text": _translation_of(b, translations) or t,
+            "claimed": False, "id": None, "backlink": None,
+        })
+    n_page_footnotes = sum(len(v) for v in page_fn_map.values())
+    if n_page_footnotes:
+        logger.info(f"  页脚注: {n_page_footnotes} 条待锚定")
+
+    # 层级 → spine/partition：优先用目录条目的用词形状（绝对真值），
+    # 无目录信息时回退到正文顶层标题的用词启发式。
+    # 注意：Popo 的 level 只有相对意义，不能假设绝对层级。
+    partition_level, spine_level = _spine_from_toc(toc_entries)
+    if spine_level is None:
+        title_levels = sorted({
+            b["level"] for b in blocks
+            if b.get("type") == "title" and b.get("level", -1) > 0
+        })
+        partition_level, spine_level = None, (title_levels[0] if title_levels else 1)
+        if len(title_levels) >= 2:
+            top_titles = [
+                (b.get("content") or "").strip() for b in blocks
+                if b.get("type") == "title" and b.get("level") == title_levels[0]
+            ]
+            n_hint = sum(1 for t in top_titles if _PARTITION_HINT.match(t))
+            if n_hint >= max(1, len(top_titles) // 2):
+                partition_level, spine_level = title_levels[0], title_levels[1]
+    logger.info(
+        f"  Popo 层级: partition={partition_level}, spine={spine_level}"
+    )
+
+    units = []
+    cur = None
+    open_para = None
+    toc_lookup = _build_toc_lookup(toc_entries)
+    prev_unit_key = None  # 上一个编/章单元的归一化标题（查重）
+    fn_counter = [0]      # 脚注序号（全书唯一 id）
+    last_page = 0         # 当前遍历到的页码（未锚定脚注的清扫水位）
+
+    def _similar(a, b):
+        """相邻单元标题判重：互为包含视为同一编/章（如 '权利变动' vs '第四编权利变动'）"""
+        return a and b and (a in b or b in a)
+
+    def claim_footnotes(seg: str, page: int) -> str:
+        """把 seg 中能锚定的脚注标记替换为 noteref 链接，脚注挂到当前单元"""
+        for fn in page_fn_map.get(page, []):
+            if fn["claimed"] or not fn["marker"]:
+                continue
+            mark = fn["marker"]
+            # 上标形式 <sup>a</sup> 必试；圈码标记（非字母数字）才退化裸匹配，
+            # 字母/数字标记只允许上标（防误伤正文）
+            patterns = [f"<sup>{mark}</sup>"]
+            if mark and not mark[0].isalnum():
+                patterns.append(mark)
+            for pat in patterns:
+                pos = seg.find(pat)
+                if pos < 0:
+                    continue
+                fn_counter[0] += 1
+                n = fn_counter[0]
+                link = (f'<a epub:type="noteref" id="fnref_{n}" '
+                        f'href="#fn_{n}">{pat}</a>')
+                seg = seg[:pos] + link + seg[pos + len(pat):]
+                fn["claimed"] = True
+                fn["id"] = n
+                fn["backlink"] = f"fnref_{n}"
+                cur.setdefault("fn_list", []).append(fn)
+                break
+        return seg
+
+    def flush_footnotes():
+        """单元收尾：渲染章末尾注（含未锚定的兜底，绝不丢内容）"""
+        if cur is None:
+            return
+        # 未锚定的脚注：凡页码不超过当前水位的，随本单元一并收尾
+        for page in sorted(page_fn_map):
+            if page > last_page:
+                break
+            for fn in page_fn_map[page]:
+                if not fn["claimed"]:
+                    fn["claimed"] = True
+                    cur.setdefault("fn_list", []).append(fn)
+        fns = cur.get("fn_list", [])
+        if not fns:
+            return
+        items = []
+        for fn in fns:
+            # 脚注正文自带的编号剥掉（含 $^{a}$ 形式），避免与链接编号重复
+            fn_text = fn["text"]
+            if fn.get("marker"):
+                for pref in (f'$^{{{fn["marker"]}}}$', fn["marker"]):
+                    if fn_text.startswith(pref):
+                        fn_text = fn_text[len(pref):].lstrip(" .、．")
+                        break
+            if fn.get("id"):
+                back = (f'<a href="#{fn["backlink"]}">{fn["marker"] or "※"}</a> ')
+                fid = f' id="fn_{fn["id"]}"'
+            else:
+                back = f'{fn["marker"] or "※"} '
+                fid = ""
+            items.append(
+                f'<p class="footnote"{fid}>{back}{_mathmlify(convert(fn_text))}</p>')
+        cur["parts"].append(
+            '<aside class="footnotes"><hr/>' + "".join(items) + "</aside>")
+        cur["fn_list"] = []
+
+    def flush_para():
+        nonlocal open_para
+        if open_para and cur is not None:
+            cur["parts"].append(f"<p>{open_para}</p>")
+        open_para = None
+
+    def ensure_unit():
+        nonlocal cur
+        if cur is None:
+            cur = {"kind": "chapter", "title": default_title,
+                   "level": spine_level, "parts": [], "subs": [], "fn_list": []}
+            units.append(cur)
+
+    for b in blocks:
+        btype = b.get("type", "text")
+        text = (b.get("content") or "").strip()
+        level = b.get("level", -1)
+        last_page = b.get("page", last_page)
+
+        # ── 标题 ──
+        if btype == "title" and level > 0:
+            flush_para()
+            flush_footnotes()
+            zh = _translation_of(b, translations)
+            display = zh if zh else _enrich_title(text, toc_lookup)
+            dkey = _normalize(display)
+            if partition_level is not None and level <= partition_level:
+                if _similar(dkey, prev_unit_key) and cur is not None:
+                    # 相似分隔页（如 '权利变动' 与 '第四编'）→ 合并进当前单元
+                    if len(dkey) > len(prev_unit_key) or _PARTITION_HINT.match(display):
+                        cur["title"] = display
+                        prev_unit_key = _normalize(display)
+                    continue
+                cur = {"kind": "divider", "title": display, "level": level,
+                       "parts": [], "subs": [], "fn_list": []}
+                units.append(cur)
+                prev_unit_key = dkey
+            elif level <= spine_level:
+                if _similar(dkey, prev_unit_key) and cur is not None:
+                    # 重复/相似章标题（章题页重复、分隔页碎片）→ 不新开章
+                    if len(dkey) > len(prev_unit_key) or _PARTITION_HINT.match(display):
+                        cur["title"] = display
+                        prev_unit_key = _normalize(display)
+                    continue
+                cur = {"kind": "chapter", "title": display, "level": level,
+                       "parts": [], "subs": [], "fn_list": []}
+                units.append(cur)
+                prev_unit_key = dkey
+            else:
+                ensure_unit()
+                anchor = f"h{b['id']}"
+                htag = f"h{min(level, 6)}"
+                cur["parts"].append(f'<{htag} id="{anchor}">{convert(display)}</{htag}>')
+                if level == spine_level + 1:
+                    cur["subs"].append((level, display, anchor))
+            continue
+
+        # ── 页脚注：收集待锚定，章末尾注统一渲染 ──
+        if btype == "page_footnote":
+            continue
+
+        # ── 图表标题/脚注：已关联的跳过（随视觉块渲染），孤儿按段落渲染 ──
+        if btype in caption_types + footnote_types:
+            if b.get("image", -1) >= 0:
+                continue
+            if not text:
+                continue
+            # 落入普通段落流程
+
+        # ── 图片 ──
+        elif btype == "image":
+            flush_para()
+            ensure_unit()
+            img_name = img_lookup.get(b["id"], "")
+            html = ""
+            if img_name:
+                caps = caption_map.get(b["id"], [])
+                alt = caps[0] if caps else ""
+                html += f'<img src="images/{img_name}" alt="{convert(alt)}"/>'
+            for cap in caption_map.get(b["id"], []):
+                html += f'<p class="no_indent"><small>{convert(cap)}</small></p>'
+            for fn in footnote_map.get(b["id"], []):
+                html += f'<p class="no_indent"><small>{convert(fn)}</small></p>'
+            if html:
+                cur["parts"].append(html)
+            continue
+
+        # ── 表格（跨页合并后的 html） ──
+        elif btype == "table":
+            flush_para()
+            ensure_unit()
+            html = ""
+            for cap in caption_map.get(b["id"], []):
+                html += f'<p class="no_indent"><strong>{convert(cap)}</strong></p>'
+            html += b.get("content", "") or ""
+            for fn in footnote_map.get(b["id"], []):
+                html += f'<p class="no_indent"><small>{convert(fn)}</small></p>'
+            if html.strip():
+                cur["parts"].append(html)
+            continue
+
+        # ── 文本 / 公式 / 其他 ──
+        if not text:
+            continue
+        ensure_unit()
+        raw = _translation_of(b, translations) or text
+        seg = convert(raw)
+        seg = claim_footnotes(seg, b.get("page", 0))
+        seg = _mathmlify(seg)
+        if b.get("id") in contd_targets and open_para is not None:
+            open_para = _dehyphen_join(open_para, seg)
+        else:
+            flush_para()
+            open_para = seg
+
+    flush_para()
+    flush_footnotes()
+    return units
+
+
+def _emit_popo_body(units: list, book, spine: list, css,
+                    chapter_idx: int, lang: str) -> tuple:
+    """把 _render_popo_body 的单元写入 EPUB，返回 (body_spine_info, chapter_idx)。
+
+    TOC 结构（最多 3 层）：
+    - 编(divider) → Section 嵌套章链接
+    - 章(chapter) → Link；有子标题的章 → (Section(href), (子标题锚点链接...))
+    """
+    body_spine_info = []
+    group_info = {"parent_link": None, "children_links": []}
+
+    def close_group():
+        nonlocal group_info
+        if group_info["parent_link"] or group_info["children_links"]:
+            body_spine_info.append(group_info)
+        group_info = {"parent_link": None, "children_links": []}
+
+    for unit in units:
+        if unit["kind"] == "divider":
+            close_group()
+            parts = [
+                f'<h1 class="part-title">{_convert_latex_sup(unit["title"])}</h1>'
+            ] + unit["parts"]
+            divider = epub.EpubHtml(
+                title=unit["title"],
+                file_name=f"part_{chapter_idx:03d}.xhtml",
+                lang=lang,
+            )
+            divider.content = "\n".join(parts)
+            if "<math" in divider.content:
+                divider.properties.append("mathml")
+            divider.add_item(css)
+            book.add_item(divider)
+            spine.append(divider)
+            group_info = {
+                "parent_link": epub.Link(
+                    divider.file_name, unit["title"], f"part_{chapter_idx}"
+                ),
+                "children_links": [],
+            }
+            chapter_idx += 1
+        else:
+            parts = [
+                f'<h2 class="chapter-title">{_convert_latex_sup(unit["title"])}</h2>'
+            ] + unit["parts"]
+            file_name = f"chapter_{chapter_idx:03d}.xhtml"
+            chapter = epub.EpubHtml(
+                title=unit["title"], file_name=file_name, lang=lang
+            )
+            chapter.content = "\n".join(parts)
+            if "<math" in chapter.content:
+                chapter.properties.append("mathml")
+            chapter.add_item(css)
+            book.add_item(chapter)
+            spine.append(chapter)
+            if unit["subs"]:
+                sub_links = tuple(
+                    epub.Link(f"{file_name}#{anchor}", sub_title,
+                              f"sub_{chapter_idx}_{k}")
+                    for k, (_lv, sub_title, anchor) in enumerate(unit["subs"])
+                )
+                group_info["children_links"].append(
+                    (epub.Section(unit["title"], href=file_name), sub_links)
+                )
+            else:
+                group_info["children_links"].append(
+                    epub.Link(file_name, unit["title"], f"ch_{chapter_idx}")
+                )
+            chapter_idx += 1
+
+    close_group()
+    return body_spine_info, chapter_idx
 
 
 # ── 图片收集 ────────────────────────────────────────────────────
@@ -555,6 +1147,7 @@ def generate_epub(
     structure: dict,
     output_dir: str,
     pdf_path: str = "",
+    translations: dict = None,
 ) -> Path:
     """
     生成 EPUB 文件。
@@ -565,6 +1158,7 @@ def generate_epub(
         structure: Stage 2 输出 {metadata, front_matter, body, back_matter, noise_ranges}
         output_dir: 输出目录
         pdf_path: 源 PDF 路径（用于提取封面）
+        translations: Stage 4 输出 {key: 译文}（可选，提供时正文/前后页用译文渲染）
     """
     logger.info("Stage 3 开始: 生成 EPUB")
 
@@ -583,7 +1177,27 @@ def generate_epub(
     # 按页组织 blocks
     pages = _classify_blocks_by_page(content_list)
 
-    # 确定 spine 层级和分组
+    # Popo/Hybrid 引擎：加载标注 blocks 与正文页码范围
+    popo_blocks = None
+    popo_body = None
+    if structure.get("engine") in ("popo", "hybrid"):
+        blocks_file = structure.get("popo_blocks_file")
+        blocks_path = Path(output_dir) / blocks_file if blocks_file else None
+        if blocks_path and blocks_path.is_file():
+            with open(blocks_path, "r", encoding="utf-8") as f:
+                popo_blocks = json.load(f)
+            total_pages = max(
+                (b.get("page_idx", 0) + 1 for b in content_list), default=0
+            )
+            popo_body = _body_range(structure, total_pages)
+            logger.info(
+                f"  Popo 引擎: {len(popo_blocks)} 标注块, "
+                f"正文页范围 {popo_body[0]}-{popo_body[1]}"
+            )
+        else:
+            logger.error("  Popo 引擎但找不到标注 blocks 文件，正文将为空")
+
+    # 确定 spine 层级和分组（旧引擎；Popo 引擎 body 为空，以下分组自然跳过）
     spine_level = _determine_spine_level(body_items)
     spine_groups = _build_spine_groups(body_items, spine_level)
     logger.info(
@@ -668,7 +1282,7 @@ def generate_epub(
         fm_html = _render_pages_html(
             fm.get("page_start", 0),
             fm.get("page_end", 0),
-            pages, images_dir, noise_pages, chinese_punct,
+            pages, images_dir, noise_pages, chinese_punct, translations,
         )
         if not fm_html.strip():
             continue
@@ -685,7 +1299,27 @@ def generate_epub(
         spine.append(chapter)
         front_toc.append(epub.Link(chapter.file_name, fm_label, f"fm_{i}"))
 
-    # ── 正文（层级嵌套） ──
+    # ── 正文（Popo 引擎：线性渲染标注 blocks） ──
+    if structure.get("engine") in ("popo", "hybrid"):
+        units = []
+        if popo_blocks:
+            units = _render_popo_body(
+                popo_blocks, content_list, popo_body[0], popo_body[1],
+                chinese_punct, title,
+                toc_entries=structure.get("toc_entries"),
+                translations=translations,
+            )
+            logger.info(
+                f"  Popo 渲染: {len(units)} 个单元 "
+                f"({sum(1 for u in units if u['kind'] == 'divider')} 编, "
+                f"{sum(1 for u in units if u['kind'] == 'chapter')} 章)"
+            )
+        bi, chapter_idx = _emit_popo_body(
+            units, book, spine, css, chapter_idx, meta.get("language", "zh")
+        )
+        body_spine_info.extend(bi)
+
+    # ── 正文（层级嵌套，旧引擎；Popo 引擎时 spine_groups 为空，自动跳过） ──
     for group in spine_groups:
         parent = group.get("parent")
         children = group["children"]
@@ -703,7 +1337,7 @@ def generate_epub(
                 if parent["page_start"] <= intro_end:
                     intro_html = _render_pages_html(
                         parent["page_start"], intro_end,
-                        pages, images_dir, noise_pages, chinese_punct,
+                        pages, images_dir, noise_pages, chinese_punct, translations,
                     )
                     if intro_html.strip():
                         divider_parts.append(intro_html)
@@ -753,7 +1387,7 @@ def generate_epub(
         bm_html = _render_pages_html(
             bm.get("page_start", 0),
             bm.get("page_end", 0),
-            pages, images_dir, noise_pages, chinese_punct,
+            pages, images_dir, noise_pages, chinese_punct, translations,
         )
         if not bm_html.strip():
             continue
@@ -778,9 +1412,9 @@ def generate_epub(
         parent_link = group_info["parent_link"]
         children = group_info["children_links"]
         if parent_link and children:
-            # 有父级（编）→ 嵌套：Section(编标题, (章链接...))
+            # 有父级（编）→ 嵌套：Section(编标题, (章链接...))，编本身可点击
             toc_entries.append((
-                epub.Section(parent_link.title),
+                epub.Section(parent_link.title, href=parent_link.href),
                 tuple(children),
             ))
         elif parent_link:
@@ -795,14 +1429,8 @@ def generate_epub(
     if cover_image_path:
         with open(cover_image_path, "rb") as f:
             cover_data = f.read()
-        # 添加封面图片
-        cover_img_item = epub.EpubItem(
-            uid="cover-image",
-            file_name="images/cover.jpg",
-            media_type="image/jpeg",
-            content=cover_data,
-        )
-        book.add_item(cover_img_item)
+        # 注册封面元数据（阅读器据此显示封面；原先手动 EpubItem 缺元数据）
+        book.set_cover("images/cover.jpg", cover_data, create_page=False)
         # 添加封面页
         cover_html = epub.EpubHtml(
             title="封面",
