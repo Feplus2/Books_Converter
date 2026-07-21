@@ -629,9 +629,9 @@ if metadata.get("language") == "zh":
 ```
 D:\My_Library\
   民法总论\
-    民法总论 (杨代雄) (z-library.sk, 1lib.sk, z-lib.sk).pdf   ← 源文件
-    民法总论.epub                                               ← 最终产物（clean title）
-    民法总论 (杨代雄) (z-library.sk, 1lib.sk, z-lib.sk)\        ← 工作目录（PDF stem）
+    民法总论 (杨代雄).pdf                              ← 源文件
+    民法总论.epub                                      ← 最终产物（clean title）
+    民法总论 (杨代雄)\                                  ← 工作目录（PDF stem）
       mineru\
         *.md                    ← MinerU Markdown
         *_content_list.json     ← MinerU block 数据
