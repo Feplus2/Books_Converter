@@ -39,7 +39,7 @@ PDF → MinerU 云 API（OCR + 版面分析）
 - **全书翻译**：按阅读顺序分批（~6000 字符 + 前一条上下文 + 滚动译名表），
   人名地名全书统一；支持中/英/日/法/德/西/韩目标语言；断点续翻
 - **扫描缺陷自愈**：重复扫描的页面自动检测丢弃、编分隔页自动救援、
-  目录页密度检测防边界泄漏
+  目录页密度检测防边界泄漏、章标题被 OCR 漏识时按目录页码回补
 - **GUI 前端**：拖拽多本 PDF、密钥设置、队列进度、中英双语界面、真实进度条
 
 ## 快速开始
@@ -47,7 +47,7 @@ PDF → MinerU 云 API（OCR + 版面分析）
 ### 方式 A：免安装绿色版（推荐给非技术用户）
 
 1. 到 [Releases](https://github.com/Feplus2/Books_Converter/releases) 下载
-   `Books_Converter-v1.0-win64.zip`（约 63MB）
+   `Books_Converter-v1.1-win64.zip`（约 63MB）
 2. 解压，双击 `Books_Converter.exe`
    （首次运行 Windows SmartScreen 会提示"未知发布者"→ 更多信息 → 仍要运行）
 3. 在设置里填两个 Key（见下），把 PDF 拖进窗口，点"开始转换"
