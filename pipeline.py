@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""
+r"""
 Books_Converter — PDF → EPUB 全自动转换管线
 
 用法:
-    python pipeline.py <pdf_path> [--output-dir <dir>] [--ocr/--no-ocr]
+    python pipeline.py <pdf_path> [--output-dir <dir>] [--ocr/--no-ocr] [--headless]
 
 示例:
     python pipeline.py "D:\books\mybook.pdf"
     python pipeline.py "D:\books\mybook.pdf" --output-dir "F:\output"
     python pipeline.py "D:\books\mybook.pdf" --no-ocr   # 文字版 PDF
+    python pipeline.py "D:\books\mybook.pdf" --headless # 无界面 JSON 进度（SageRead sidecar）
 """
 
 import argparse
@@ -30,7 +31,18 @@ from pathlib import Path
 from stage1_mineru import run_mineru, save_mineru_metadata, _count_pages
 from stage2_hybrid import analyze_structure_hybrid, save_structure
 from stage3_epub import generate_epub
-from progress_ui import ProgressWindow
+from progress_headless import HeadlessProgress, emit_error
+# ProgressWindow（tkinter）改为延迟导入，headless CLI 不打包 tkinter
+
+
+class _ErrCapture(logging.Handler):
+    """捕获首条 ERROR 日志，作为 headless 模式的错误详情回传（首条通常最贴近根因）"""
+
+    first = ""
+
+    def emit(self, record):
+        if record.levelno >= logging.ERROR and not _ErrCapture.first:
+            _ErrCapture.first = record.getMessage()
 
 
 def main():
@@ -82,12 +94,22 @@ def main():
         metavar="LANG",
         help="翻译全书（Stage 4，DeepSeek 分批+上下文）。不带参数默认译为中文",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="无界面模式：向 stdout 打印 JSON 进度（供 SageRead sidecar 集成）",
+    )
 
     args = parser.parse_args()
+    if args.headless:
+        logging.getLogger().addHandler(_ErrCapture())
+
     pdf_path = Path(args.pdf)
 
     if not pdf_path.exists():
         logger.error(f"PDF 文件不存在: {pdf_path}")
+        if args.headless:
+            emit_error(f"PDF 文件不存在: {pdf_path}")
         sys.exit(1)
 
     book_name = pdf_path.stem
@@ -104,7 +126,7 @@ def main():
     logger.info(f"  OCR: {'强制' if args.ocr else '自动'}")
     logger.info("=" * 60)
 
-    # ── 启动进度窗口（按实测速率预估各阶段耗时，校准进度条） ──
+    # ── 启动进度报告（按实测速率预估各阶段耗时，校准进度条） ──
     try:
         total_pages = _count_pages(str(pdf_path))
     except Exception:
@@ -117,9 +139,15 @@ def main():
     # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
     est_s3 = max(total_pages * 2.0, 30) if args.translate else 3.0
     est_list = [est_s1, est_s2, est_s3, 3.0] if args.translate else [est_s1, est_s2, 3.0]
-    pw = ProgressWindow(book_name, engine="hybrid",
-                        stage_estimates=est_list,
-                        translate=bool(args.translate))
+    if args.headless:
+        pw = HeadlessProgress(book_name, engine="hybrid",
+                              stage_estimates=est_list,
+                              translate=bool(args.translate))
+    else:
+        from progress_ui import ProgressWindow  # 延迟导入，headless 模式不触 tkinter
+        pw = ProgressWindow(book_name, engine="hybrid",
+                            stage_estimates=est_list,
+                            translate=bool(args.translate))
     pw.start()
 
     total_start = time.time()
@@ -222,8 +250,8 @@ def main():
                 pdf_path=str(pdf_path),
                 translations=translations,
             )
-            # 复制一份到 PDF 同目录（方便使用）
-            final_path = pdf_path.parent / epub_path.name
+            # 复制一份到输出目录（--output-dir 生效；默认即 PDF 所在目录）
+            final_path = output_base / epub_path.name
             if epub_path != final_path:
                 import shutil
                 shutil.copy2(epub_path, final_path)
@@ -252,7 +280,8 @@ def main():
         logger.info(f"     {'总计':<12} {total_elapsed:.0f}s")
         logger.info("=" * 60)
 
-        pw.finish(str(epub_path.name), total_elapsed)
+        # headless 需要完整路径（前端据此读文件入库）；GUI 仍只显示文件名
+        pw.finish(str(epub_path) if args.headless else str(epub_path.name), total_elapsed)
 
         # 声音提示：清脆的上行琶音（C6-E6-G6-C7）
         try:
@@ -264,11 +293,20 @@ def main():
 
         return epub_path
 
-    except SystemExit:
+    except SystemExit as e:
         pw.close()
+        if args.headless and (e.code not in (0, None)):
+            emit_error(_ErrCapture.first or "转换失败")
         raise
     except KeyboardInterrupt:
         pw.close()
+        if args.headless:
+            emit_error("用户取消")
+        raise
+    except Exception as e:
+        pw.close()
+        if args.headless:
+            emit_error(str(e) or _ErrCapture.first or "转换失败")
         raise
 
 
