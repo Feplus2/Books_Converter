@@ -53,7 +53,7 @@ _LIGHT_PROMPT = """你是一位图书结构分析师。以下是一本书【开�
     {{"type": "appendix|bibliography|index|afterword|colophon|notes", "label": "简短描述", "page_start": N, "page_end": N}}
   ],
   "toc_entries": [
-    {{"text": "目录条目的完整文字（如'第一章 蠢材的天堂'，不含页码和点线）", "level": 1}}
+    {{"text": "目录条目的完整文字（如'第一章 蠢材的天堂'，不含页码和点线）", "level": 1, "page": 12}}
   ]
 }}
 
@@ -66,7 +66,8 @@ _LIGHT_PROMPT = """你是一位图书结构分析师。以下是一本书【开�
    不要凭采样猜测；列表中找不到依据的条目不要输出
 5. toc_entries 从目录页文本中提取，**覆盖目录出现的所有层级**（编/篇/卷、章、节，
    通常 2-3 层），level 从 1 开始递增；保持目录中的原始完整文字
-   （OCR 可能有少量错字，选择最合理的版本）
+   （OCR 可能有少量错字，选择最合理的版本）；page 填该条目在目录中标注的
+   印刷页码（整数），条目本身不带页码则填 null
 6. 所有页码用整数，language 用两位小写代码
 只输出 JSON，不要输出任何解释。
 
@@ -226,6 +227,104 @@ def _title_shape(text: str) -> str:
     return "plain"
 
 
+def _edit_distance_le(a: str, b: str, limit: int) -> int:
+    """有界 Levenshtein 距离：超过 limit 提前返回 limit+1。"""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        row_min = i
+        for j, cb in enumerate(b, 1):
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+            cur.append(v)
+            row_min = min(row_min, v)
+        if row_min > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def _build_anchors(toc_entries: list) -> list:
+    """目录条目 → 锚点表 [(归一化键, level, 显示文本, 印刷页码|None)]"""
+    anchors = []
+    for e in toc_entries or []:
+        raw = (e.get("text") or "").strip()
+        if not raw:
+            continue
+        display = re.sub(r"[\s.…·_]+\d+\s*$", "", raw).strip()
+        key = _normalize_title(display)
+        try:
+            level = int(e.get("level", 0))
+        except (TypeError, ValueError):
+            continue
+        page = e.get("page")
+        try:
+            page = int(page) if page is not None else None
+        except (TypeError, ValueError):
+            page = None
+        if key and level > 0:
+            anchors.append((key, level, display, page))
+    return anchors
+
+
+def _match_anchor(text: str, anchors: list):
+    """归一化匹配锚点：精确 > 块是锚点前缀 > 块是锚点尾部（分隔页模式）
+    > 有界编辑距离（容忍 OCR 单字差异）。
+
+    不做"中间包含"匹配——会把 '权利主体' 错配到
+    '第一节 作为权利主体的自然人' 这类更长条目上。
+    返回匹配的锚点元组 (key, level, display, page)，未匹配返回 None。
+    """
+    key = _normalize_title(text)
+    if not key:
+        return None
+    prefix_best = None
+    suffix_best = None
+    for a in anchors:
+        k, lv = a[0], a[1]
+        if k == key:
+            return a
+        if k.startswith(key) and len(k) > len(key):
+            # 块是锚点的前缀（"第一章" → "第一章 民法概念论"），取最长
+            if prefix_best is None or len(k) > len(prefix_best[0]):
+                prefix_best = (k, a)
+        elif len(key) >= 4 and k.endswith(key) and len(k) > len(key):
+            # 块是锚点的尾部（"权利主体" → "第二编 权利主体"），取最短
+            if suffix_best is None or len(k) < len(suffix_best[0]):
+                suffix_best = (k, a)
+    if prefix_best is not None:
+        return prefix_best[1]
+    if suffix_best is not None:
+        return suffix_best[1]
+    # 块是锚点的子串（副标题被 OCR 截断，如"…——当代新"缺尾字）；
+    # 限长块防"权利主体"式短块错配，取最短包含锚点（最具体）
+    if len(key) >= 8:
+        sub_best = None
+        for a in anchors:
+            k = a[0]
+            if key in k and len(k) > len(key):
+                if sub_best is None or len(k) < len(sub_best[0]):
+                    sub_best = (k, a)
+        if sub_best is not None:
+            return sub_best[1]
+    # 模糊兜底：目录页与正文的 OCR 结果常有单字差异（僵/催、是/和、缺字）
+    if len(key) >= 6:
+        limit = 1 if len(key) < 12 else 2
+        best_dist = limit + 1
+        best = None
+        ambiguous = False
+        for a in anchors:
+            d = _edit_distance_le(key, a[0], limit)
+            if d < best_dist:
+                best_dist, best, ambiguous = d, a, False
+            elif d == best_dist and a is not best:
+                ambiguous = True
+        if best is not None and not ambiguous:
+            return best
+    return None
+
+
 def _calibrate_levels(blocks: list, toc_entries: list) -> int:
     """校准结构模型的漂移层级：TOC 锚点 + 形状栈。
 
@@ -243,47 +342,11 @@ def _calibrate_levels(blocks: list, toc_entries: list) -> int:
     返回锚点命中数。
     """
     # ── 目录锚点表 ──
-    anchors = []
-    for e in toc_entries or []:
-        raw = (e.get("text") or "").strip()
-        if not raw:
-            continue
-        display = re.sub(r"[\s.…·_]+\d+\s*$", "", raw).strip()
-        key = _normalize_title(display)
-        try:
-            level = int(e.get("level", 0))
-        except (TypeError, ValueError):
-            continue
-        if key and level > 0:
-            anchors.append((key, level, display))
+    anchors = _build_anchors(toc_entries)
 
     def match_anchor(text: str):
-        """归一化匹配：精确 > 块是锚点前缀 > 块是锚点尾部（分隔页模式）。
-
-        不做"中间包含"匹配——会把 '权利主体' 错配到
-        '第一节 作为权利主体的自然人' 这类更长条目上。
-        """
-        key = _normalize_title(text)
-        if not key:
-            return None
-        prefix_best = None
-        suffix_best = None
-        for k, lv, _d in anchors:
-            if k == key:
-                return lv
-            if k.startswith(key) and len(k) > len(key):
-                # 块是锚点的前缀（"第一章" → "第一章 民法概念论"），取最长
-                if prefix_best is None or len(k) > len(prefix_best[0]):
-                    prefix_best = (k, lv)
-            elif len(key) >= 4 and k.endswith(key) and len(k) > len(key):
-                # 块是锚点的尾部（"权利主体" → "第二编 权利主体"），取最短
-                if suffix_best is None or len(k) < len(suffix_best[0]):
-                    suffix_best = (k, lv)
-        if prefix_best is not None:
-            return prefix_best[1]
-        if suffix_best is not None:
-            return suffix_best[1]
-        return None
+        m = _match_anchor(text, anchors)
+        return m[1] if m else None
 
     # ── 锚点驱动的标题救援 ──
     # 编/章分隔页常被模型漏判（大字孤立、无上下文）；
@@ -322,7 +385,7 @@ def _calibrate_levels(blocks: list, toc_entries: list) -> int:
         return vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2
 
     anchor_shape_votes = {}
-    for _k, lv, display in anchors:
+    for _k, lv, display, _p in anchors:
         anchor_shape_votes.setdefault(_title_shape(display), []).append(lv)
     anchor_shape_key = {s: median(vs) for s, vs in anchor_shape_votes.items()}
 
@@ -362,15 +425,24 @@ def _calibrate_levels(blocks: list, toc_entries: list) -> int:
         text = (b.get("content") or "").strip()
         shape = _title_shape(text)
         key = shape_key(shape)
-        toc_level = match_anchor(text)
+        m = _match_anchor(text, anchors)
+        toc_level = m[1] if m else None
 
         if toc_level is not None:
-            # 锚点锁定，并把栈重置到该层级
+            # 富化：块只是锚点条目的前缀/尾部/子串（章名竖排被 OCR
+            # 拆块或截断）→ 用目录完整文字替换，保证渲染标题完整
+            bkey = _normalize_title(text)
+            if m[0] != bkey and bkey in m[0]:
+                b["content"] = m[2]
+            # 锚点锁定，并把栈重置到该层级。
+            # 压栈键用真实层级而非形状排名键：章名块与节标题可能同形状
+            # （如均无编号/plain），用形状键会同键碰撞——后续兄弟节标题
+            # 弹栈时把父章一并弹出，空栈兜底再取到被污染的层级。
             while stack and stack[-1][1] >= toc_level:
                 last_shape_level[stack[-1][2]] = stack[-1][1]
                 stack.pop()
             b["level"] = toc_level
-            stack.append((key, toc_level, shape))
+            stack.append((float(toc_level), toc_level, shape))
             hits += 1
             logger.info(f"    锚点 P{b.get('page')} L{b['level_raw']}→L{toc_level} "
                         f"{text[:30]}")
@@ -389,6 +461,150 @@ def _calibrate_levels(blocks: list, toc_entries: list) -> int:
 
     logger.info(f"  TOC 锚定校正: {hits} 个锚点命中（共 {len(titled)} 个标题）")
     return hits
+
+
+def _rescue_by_page(blocks: list, toc_entries: list) -> int:
+    """按页码定位救援未锚上的目录条目（锚点文本匹配全失败时）。
+
+    两类典型场景：
+    1. 章扉页竖排/美术字标题被上游 OCR 整块漏识别 → 无块可锚，
+       按目录文本合成标题块插到预期页；
+    2. 标题块存在，但目录页 OCR 错字超出文本模糊阈（如 卖淫女→奕淫女，
+       3 字标题容不得容错）→ 用"页码位置 + 小编辑距离"联合证据晋升。
+
+    偏移估计：已锚定标题的 (扫描页 - 印刷页) 投票。扫描件可能丢印刷页
+    （全书偏移缓慢变化），故取**局部偏移**——印刷页码最近邻锚点的偏移；
+    全局众数仅用于剔除封面残片之类的野票（±5 页以外）。
+
+    顶层条目（章）额外加"下一个已锚定子条目的前一页"候选（章扉页通常
+    紧邻首个节）。合成块只插稀疏页（≤4 块，像章扉页），稠密页宁可不救，
+    避免标题插进上一章末尾污染两章。节级条目只晋升已有块，不合成。
+    """
+    from collections import Counter
+
+    anchors = _build_anchors(toc_entries)
+    titled = [b for b in blocks
+              if b.get("type") == "title" and b.get("level", -1) > 0]
+    if not anchors or not titled:
+        return 0
+
+    # ── 偏移投票（两遍：先众数，再剔野票） ──
+    raw_votes = []  # (印刷页, 扫描页)
+    for b in titled:
+        m = _match_anchor((b.get("content") or "").strip(), anchors)
+        if m and m[3] and b.get("level") == m[1]:
+            raw_votes.append((m[3], b["page"]))
+    if len(raw_votes) < 3:
+        return 0
+    mode = Counter(pdf - pr for pr, pdf in raw_votes).most_common(1)[0][0]
+    votes = sorted((pr, pdf) for pr, pdf in raw_votes
+                   if abs(pdf - pr - mode) <= 5)
+    if len(votes) < 3:
+        return 0
+
+    def offset_at(printed: int) -> int:
+        pr, pdf = min(votes, key=lambda v: abs(v[0] - printed))
+        return pdf - pr
+
+    # ── 已满足条目（文本匹配 + 位置 sanity，防封面残片毒化） ──
+    satisfied = {}  # anchor key → 匹配块页码
+    for b in titled:
+        m = _match_anchor((b.get("content") or "").strip(), anchors)
+        if not m:
+            continue
+        if m[3] is None or abs(b["page"] - (m[3] + offset_at(m[3]))) <= 3:
+            satisfied.setdefault(m[0], b["page"])
+
+    top_level = min(a[1] for a in anchors)
+    max_page = max(b.get("page", 0) for b in blocks)
+    page_block_count = Counter(b.get("page", 0) for b in blocks)
+    page_blocks = {}
+    for b in blocks:
+        page_blocks.setdefault(b.get("page", 0), []).append(b)
+    max_id = max((b.get("id", 0) for b in blocks), default=0)
+    rescued = 0
+
+    for i, (key, level, display, page) in enumerate(anchors):
+        if key in satisfied:
+            continue
+        limit = 1 if len(key) < 12 else 2
+        # 候选页：条目页码（局部偏移）+ 章级条目"下一锚定子条目前一页"
+        candidates = set()
+        if page:
+            candidates.add(page + offset_at(page))
+        if level == top_level and i + 1 < len(anchors):
+            nxt = anchors[i + 1]
+            if nxt[0] in satisfied:
+                candidates.add(satisfied[nxt[0]] - 1)
+        for pdf_page in sorted(candidates):
+            if pdf_page < 1 or pdf_page > max_page:
+                continue
+            # 页码位置 + 文本模糊 联合证据：候选页上找与条目近似的块
+            near_blocks = page_blocks.get(pdf_page, [])
+            best = None  # (dist, is_title, block)
+            for b in near_blocks:
+                bkey = _normalize_title(b.get("content") or "")
+                if not bkey or len(bkey) > 45:
+                    continue
+                d = _edit_distance_le(bkey, key, limit) \
+                    if len(bkey) >= 3 else limit + 1
+                if d <= limit:
+                    cand = (d, 0 if b.get("type") == "title" else 1, b)
+                    if best is None or cand[:2] < best[:2]:
+                        best = cand
+            if best is not None:
+                b = best[2]
+                if b.get("level", -1) <= 0:
+                    b["type"] = "title"
+                    b["level"] = level
+                    b["rescued"] = "page_fuzzy"
+                    titled.append(b)
+                    rescued += 1
+                    logger.info(f"    页码救援: P{pdf_page} L{level} "
+                                f"{(b.get('content') or '')[:30]}")
+                satisfied[key] = pdf_page
+                break
+            # 无近似块：仅章级条目合成标题块，且只插稀疏页
+            if level != top_level:
+                continue
+            near = [b for b in titled
+                    if b["page"] in (pdf_page - 1, pdf_page, pdf_page + 1)]
+            if any(b["level"] <= top_level
+                   or _edit_distance_le(
+                       _normalize_title(b.get("content") or ""),
+                       key, limit) <= limit
+                   for b in near):
+                break  # 标题其实在（可能没锚上），不重复造块
+            if page_block_count.get(pdf_page, 0) > 4:
+                continue  # 稠密页不像章扉页，试下一个候选
+            # id 取阅读顺序上的中间值（tree.py 用 id 大小代表先后顺序），
+            # bbox 取页首条带（仅作位置元数据）
+            pos = next((j for j, b in enumerate(blocks)
+                        if b.get("page", 0) >= pdf_page), len(blocks))
+            prev_id = blocks[pos - 1]["id"] if pos > 0 else 0
+            succ_id = blocks[pos]["id"] if pos < len(blocks) else max_id + 1
+            block = {
+                "type": "title",
+                "content": display,
+                "bbox": [0.0, 0.0, 1.0, 0.05],
+                "page": pdf_page,
+                "id": (prev_id + succ_id) / 2,
+                "level": level,
+                "contd": -1,
+                "image": -1,
+                "rescued": "toc_page",
+            }
+            blocks.insert(pos, block)
+            page_block_count[pdf_page] = page_block_count.get(pdf_page, 0) + 1
+            titled.append(block)
+            satisfied[key] = pdf_page
+            rescued += 1
+            logger.info(f"    页码回补: P{pdf_page} L{level} {display[:30]}")
+            break
+    if rescued:
+        logger.info(f"  页码救援/回补: 共 {rescued} 处"
+                    f"（全局偏移 {mode:+d}, {len(votes)} 票）")
+    return rescued
 
 
 def _detect_toc_pages(popo_titles: list, min_density: int = 6) -> set:
@@ -498,6 +714,9 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     # ── TOC 锚定校正（校准模型的漂移层级） ──
     _report("TOC 锚定校正层级...")
     _calibrate_levels(blocks, light.get("toc_entries", []))
+
+    # ── 页码救援/回补未锚上的目录条目（章扉页被 OCR 整块漏识别等） ──
+    _rescue_by_page(blocks, light.get("toc_entries", []))
 
     blocks_path = work_dir / "popo_blocks.json"
     with open(blocks_path, "w", encoding="utf-8") as f:
