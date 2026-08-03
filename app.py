@@ -60,6 +60,11 @@ _PAPER_FG = "#FDF9EE"  # 鎏金底上的纸白字
 TRANSLATE_LANGS = ["简体中文", "English", "日本語", "Français", "Deutsch",
                    "Español", "한국어"]
 
+# 解析引擎（设置下拉的显示名 ↔ ocr_provider 注册名）
+ENGINE_OPTIONS = [("mineru", "MinerU"), ("paddleocr", "PaddleOCR-VL")]
+_ENGINE_DISPLAY = dict(ENGINE_OPTIONS)
+_ENGINE_BY_DISPLAY = {v: k for k, v in ENGINE_OPTIONS}
+
 # ════════════════════════════════════════════════════════════
 # 界面文案（zh / en 键必须一一对应）
 # ════════════════════════════════════════════════════════════
@@ -79,6 +84,8 @@ STRINGS = {
         "sec_progress": "当 前 进 度",
         "status_header": "当 前 状 态",
         "lbl_mineru": "MinerU Token",
+        "lbl_engine": "解析引擎",
+        "lbl_paddle": "PaddleOCR Token",
         "lbl_base": "LLM Base URL",
         "lbl_key": "LLM API Key",
         "lbl_model": "LLM Model",
@@ -97,21 +104,29 @@ STRINGS = {
         "outdir_hint": "（留空 = 输出到 PDF 同目录）",
         "browse": "浏 览…",
         "note_mineru": "· MinerU Token 免费获取：",
+        "note_paddle": "· PaddleOCR Token 免费申请：",
         "note_llm": "· LLM 配置兼容任何 OpenAI 协议端点",
+        "btn_update": "检查更新",
+        "update_checking": "正在检查更新…",
+        "update_title": "检查更新",
+        "update_latest": "已是最新版本（v{ver}）。",
+        "update_new_t": "发现新版本",
+        "update_new": "发现新版本 v{latest}（当前 v{ver}）。\n\n前往下载页面？",
+        "update_fail": "检查更新失败：{err}",
         "save": "保存设置",
         "saved": "✓ 已存",
         "waiting": "等待中",
         "pages": "{n} 页",
         "pages_unknown": "? 页",
-        "s1_name": "MinerU",
-        "s1_desc": "PDF 解析 · OCR · 图片提取",
+        "s1_name": "PDF 解析",
+        "s1_desc": "MinerU / PaddleOCR · 图片提取",
         "s2_name": "Hybrid",
         "s2_desc": "结构重建 · 云端 LLM",
         "s3_name": "翻译",
         "s3_desc": "文学翻译 · 云端 LLM",
         "s4_name": "EPUB 生成",
         "s4_desc": "嵌套目录 · 图片 · 排版",
-        "st_s1": "MinerU 解析中",
+        "st_s1": "PDF 解析中",
         "st_s2": "结构分析中",
         "st_s3": "翻译中",
         "st_s4": "EPUB 生成中",
@@ -136,6 +151,10 @@ STRINGS = {
         "msg_no_token": "MinerU Token 为空，无法解析 PDF。\n\n"
                         "请展开「设置」，填入 Token（可从\n"
                         "https://mineru.net/apiManage/token 免费获取）。",
+        "msg_no_ptoken_t": "缺少 PaddleOCR Token",
+        "msg_no_ptoken": "已选择 PaddleOCR 引擎，但 Token 为空，无法解析 PDF。\n\n"
+                         "请展开「设置」填入 PaddleOCR Token（免费申请，\n"
+                         "链接见设置页底部），或把解析引擎改回 MinerU。",
         "msg_no_key_t": "LLM API Key 为空",
         "msg_no_key": "LLM API Key 为空：结构分析将降级为按字号的简单目录"
                       "（仍可成书，但目录较粗）。\n\n继续转换？",
@@ -146,7 +165,7 @@ STRINGS = {
         "fallback_note": "结构分析未竟，以字号粗排章节续行…",
         "translate_fail_note": "翻译未竟，仍奉上原文版。",
         "book_done_detail": "✦ 《{name}》告竣  ✦\n{path}",
-        "fail_mineru": "MinerU 解析失败：{err}",
+        "fail_mineru": "PDF 解析失败：{err}",
         "fail_epub": "EPUB 生成失败：{err}",
         "fatal_load": "加载转换模块失败：{err}",
         "fatal_run": "转换流程异常：{err}",
@@ -171,6 +190,8 @@ STRINGS = {
         "sec_progress": "PROGRESS",
         "status_header": "STATUS",
         "lbl_mineru": "MinerU Token",
+        "lbl_engine": "OCR engine",
+        "lbl_paddle": "PaddleOCR Token",
         "lbl_base": "LLM Base URL",
         "lbl_key": "LLM API Key",
         "lbl_model": "LLM Model",
@@ -190,21 +211,29 @@ STRINGS = {
         "outdir_hint": "(empty = same folder as the PDF)",
         "browse": "Browse…",
         "note_mineru": "· Free MinerU token: ",
+        "note_paddle": "· Free PaddleOCR token: ",
         "note_llm": "· LLM settings accept any OpenAI-compatible endpoint",
+        "btn_update": "Check updates",
+        "update_checking": "Checking for updates…",
+        "update_title": "Check updates",
+        "update_latest": "You're on the latest version (v{ver}).",
+        "update_new_t": "Update available",
+        "update_new": "Version v{latest} is available (current v{ver}).\n\nOpen the download page?",
+        "update_fail": "Update check failed: {err}",
         "save": "Save settings",
         "saved": "✓ Saved",
         "waiting": "Waiting",
         "pages": "{n} p.",
         "pages_unknown": "? p.",
-        "s1_name": "MinerU",
-        "s1_desc": "PDF parsing · OCR · images",
+        "s1_name": "Parse",
+        "s1_desc": "MinerU / PaddleOCR · images",
         "s2_name": "Hybrid",
         "s2_desc": "Structure rebuild · Cloud LLM",
         "s3_name": "Translate",
         "s3_desc": "Literary translation · Cloud LLM",
         "s4_name": "EPUB",
         "s4_desc": "Nested TOC · images · layout",
-        "st_s1": "MinerU parsing…",
+        "st_s1": "Parsing PDF…",
         "st_s2": "Analyzing structure…",
         "st_s3": "Translating…",
         "st_s4": "Building EPUB…",
@@ -229,6 +258,10 @@ STRINGS = {
         "msg_no_token": "MinerU Token is empty — PDF parsing is impossible.\n\n"
                         "Open Settings and paste your token\n"
                         "(free at https://mineru.net/apiManage/token).",
+        "msg_no_ptoken_t": "PaddleOCR token missing",
+        "msg_no_ptoken": "PaddleOCR is selected but its token is empty.\n\n"
+                         "Open Settings and paste your PaddleOCR token (free,\n"
+                         "link at the bottom of Settings), or switch back to MinerU.",
         "msg_no_key_t": "LLM API key empty",
         "msg_no_key": "Without an LLM API key, structure analysis falls back to a "
                       "rough font-size outline (a book is still produced).\n\n"
@@ -240,7 +273,7 @@ STRINGS = {
         "fallback_note": "Structure analysis failed; continuing with a font-size outline…",
         "translate_fail_note": "Translation failed; publishing the original text.",
         "book_done_detail": "✦ {name} finished ✦\n{path}",
-        "fail_mineru": "MinerU failed: {err}",
+        "fail_mineru": "PDF parsing failed: {err}",
         "fail_epub": "EPUB failed: {err}",
         "fatal_load": "Failed to load converter modules: {err}",
         "fatal_run": "Conversion error: {err}",
@@ -262,11 +295,15 @@ def _default_settings() -> dict:
     # frozen（PyInstaller 打包）时：不读取打包者机器的环境变量，
     # 避免把构建机的密钥预填给最终用户（泄露事故）。
     if getattr(sys, "frozen", False):
-        mineru_token, llm_key = "", ""
+        mineru_token, llm_key, paddle_token = "", "", ""
     else:
-        mineru_token, llm_key = config.MINERU_TOKEN or "", config.DEEPSEEK_API_KEY or ""
+        mineru_token = config.MINERU_TOKEN or ""
+        llm_key = config.DEEPSEEK_API_KEY or ""
+        paddle_token = config.PADDLEOCR_TOKEN or ""
     return {
         "mineru_token": mineru_token,
+        "ocr_provider": config.OCR_PROVIDER or "mineru",
+        "paddleocr_token": paddle_token,
         "llm_base_url": config.DEEPSEEK_BASE_URL or "https://api.deepseek.com",
         "llm_key": llm_key,
         "llm_model": config.DEEPSEEK_MODEL or "deepseek-v4-flash",
@@ -312,6 +349,8 @@ def _apply_settings(s: dict) -> None:
     """
     env_map = {
         "MINERU_TOKEN": s["mineru_token"].strip(),
+        "OCR_PROVIDER": s.get("ocr_provider", "mineru"),
+        "PADDLEOCR_TOKEN": s.get("paddleocr_token", "").strip(),
         "DEEPSEEK_API_KEY": s["llm_key"].strip(),
         "DEEPSEEK_BASE_URL": s["llm_base_url"].strip() or "https://api.deepseek.com",
         "DEEPSEEK_MODEL": s["llm_model"].strip() or "deepseek-v4-flash",
@@ -335,10 +374,22 @@ def _apply_settings(s: dict) -> None:
                 setattr(mod, attr, os.environ[attr])
 
 
+def _save_stage1_metadata(work_dir: str, engine: str, info: dict) -> None:
+    """保存 Stage 1 元数据到 <work_dir>/<engine>/metadata.json（与 pipeline.py 一致）"""
+    meta = {
+        "provider": engine,
+        "markdown_length": len(info.get("markdown", "")),
+        "content_blocks": len(info.get("content_list", [])),
+        "images_dir": info.get("images_dir"),
+    }
+    meta_path = Path(work_dir) / engine / "metadata.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+
 # ════════════════════════════════════════════════════════════
 # 降级结构（与 pipeline.py 的 _fallback_structure 一致）
 # ════════════════════════════════════════════════════════════
-
 def _fallback_structure(mineru_info: dict, book_name: str) -> dict:
     """当 DeepSeek 不可用时，基于 MinerU text_level 生成基础结构"""
     content_list = mineru_info.get("content_list", [])
@@ -479,6 +530,10 @@ class App:
 
         # 设置变量（跨界面重建持久）
         self.var_token = tk.StringVar(value=self.settings["mineru_token"])
+        self.var_engine = tk.StringVar(value=_ENGINE_DISPLAY.get(
+            self.settings.get("ocr_provider", "mineru"), "MinerU"))
+        self.var_paddle = tk.StringVar(
+            value=self.settings.get("paddleocr_token", ""))
         self.var_base = tk.StringVar(value=self.settings["llm_base_url"])
         self.var_key = tk.StringVar(value=self.settings["llm_key"])
         self.var_model = tk.StringVar(value=self.settings["llm_model"])
@@ -614,7 +669,8 @@ class App:
         root = self.root
         for child in root.winfo_children():
             child.destroy()
-        root.title(self._t("window_title"))
+        from version import __version__
+        root.title(f"{self._t('window_title')}  v{__version__}")
         root.configure(bg=_PARCH)
         self._style_ttk()
 
@@ -720,21 +776,32 @@ class App:
                      font=self.fonts["body"], anchor="e"
                      ).grid(row=r, column=0, sticky="e", padx=(0, 12), pady=4)
 
-        row_label(0, self._t("lbl_mineru"))
-        self._entry(sp, show="●", textvariable=self.var_token
-                    ).grid(row=0, column=1, sticky="ew", pady=4)
+        row_label(0, self._t("lbl_engine"))
+        self._engine_combo = ttk.Combobox(
+            sp, values=[d for _, d in ENGINE_OPTIONS], state="readonly",
+            textvariable=self.var_engine, style="Paper.TCombobox",
+            font=self.fonts["body"], width=12)
+        self._engine_combo.grid(row=0, column=1, sticky="w", pady=4)
 
-        row_label(1, self._t("lbl_base"))
-        self._entry(sp, textvariable=self.var_base
+        row_label(1, self._t("lbl_mineru"))
+        self._entry(sp, show="●", textvariable=self.var_token
                     ).grid(row=1, column=1, sticky="ew", pady=4)
 
-        row_label(2, self._t("lbl_key"))
-        self._entry(sp, show="●", textvariable=self.var_key
+        row_label(2, self._t("lbl_paddle"))
+        self._entry(sp, show="●", textvariable=self.var_paddle
                     ).grid(row=2, column=1, sticky="ew", pady=4)
 
-        row_label(3, self._t("lbl_model"))
+        row_label(3, self._t("lbl_base"))
+        self._entry(sp, textvariable=self.var_base
+                    ).grid(row=3, column=1, sticky="ew", pady=4)
+
+        row_label(4, self._t("lbl_key"))
+        self._entry(sp, show="●", textvariable=self.var_key
+                    ).grid(row=4, column=1, sticky="ew", pady=4)
+
+        row_label(5, self._t("lbl_model"))
         model_row = tk.Frame(sp, bg=_CARD)
-        model_row.grid(row=3, column=1, sticky="ew", pady=4)
+        model_row.grid(row=5, column=1, sticky="ew", pady=4)
         model_row.columnconfigure(0, weight=1)
         self._model_combo = ttk.Combobox(
             model_row, textvariable=self.var_model, style="Paper.TCombobox",
@@ -744,27 +811,27 @@ class App:
                                    self._on_fetch_models, small=True)
         self.btn_fetch.grid(row=0, column=1, padx=(8, 0))
 
-        row_label(4, self._t("lbl_ui_lang"))
+        row_label(6, self._t("lbl_ui_lang"))
         self._lang_combo = ttk.Combobox(
             sp, values=["中文", "English"], state="readonly",
             textvariable=self.var_ui_lang, style="Paper.TCombobox",
             font=self.fonts["body"], width=12)
-        self._lang_combo.grid(row=4, column=1, sticky="w", pady=4)
+        self._lang_combo.grid(row=6, column=1, sticky="w", pady=4)
         self._lang_combo.bind("<<ComboboxSelected>>", self._on_lang_change)
 
-        row_label(5, "OCR")
+        row_label(7, "OCR")
         ocr_row = tk.Frame(sp, bg=_CARD)
-        ocr_row.grid(row=5, column=1, sticky="w", pady=(10, 0))
+        ocr_row.grid(row=7, column=1, sticky="w", pady=(10, 0))
         Toggle(ocr_row, self.var_ocr, bg=_CARD).pack(side="left")
         tk.Label(ocr_row, text=self._t("chk_ocr"), bg=_CARD, fg=_INK,
                  font=self.fonts["body"]).pack(side="left", padx=(10, 0))
         tk.Label(sp, text=self._t("ocr_hint"), bg=_CARD, fg=_FAINT,
                  font=self.fonts["small"], anchor="w"
-                 ).grid(row=6, column=1, sticky="w", pady=(2, 0))
+                 ).grid(row=8, column=1, sticky="w", pady=(2, 0))
 
-        row_label(7, self._t("lbl_translate"))
+        row_label(9, self._t("lbl_translate"))
         tl_row = tk.Frame(sp, bg=_CARD)
-        tl_row.grid(row=7, column=1, sticky="w", pady=(10, 4))
+        tl_row.grid(row=9, column=1, sticky="w", pady=(10, 4))
         Toggle(tl_row, self.var_translate, bg=_CARD,
                command=self._on_translate_toggle).pack(side="left")
         tk.Label(tl_row, text=self._t("chk_translate"), bg=_CARD, fg=_INK,
@@ -777,9 +844,9 @@ class App:
         self._tl_combo.config(
             state="readonly" if self.var_translate.get() else "disabled")
 
-        row_label(8, self._t("lbl_outdir"))
+        row_label(10, self._t("lbl_outdir"))
         out_row = tk.Frame(sp, bg=_CARD)
-        out_row.grid(row=8, column=1, sticky="ew", pady=4)
+        out_row.grid(row=10, column=1, sticky="ew", pady=4)
         out_row.columnconfigure(0, weight=1)
         self._entry(out_row, textvariable=self.var_outdir
                     ).grid(row=0, column=0, sticky="ew")
@@ -787,10 +854,10 @@ class App:
                   ).grid(row=0, column=1, padx=(8, 0))
         tk.Label(sp, text=self._t("outdir_hint"), bg=_CARD, fg=_FAINT,
                  font=self.fonts["small"], anchor="w"
-                 ).grid(row=9, column=1, sticky="w")
+                 ).grid(row=11, column=1, sticky="w")
 
         note = tk.Frame(sp, bg=_CARD)
-        note.grid(row=10, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        note.grid(row=12, column=0, columnspan=2, sticky="w", pady=(10, 0))
         tk.Label(note, text=self._t("note_mineru"), bg=_CARD, fg=_SUBINK,
                  font=self.fonts["small"]).pack(side="left")
         link = tk.Label(note, text="https://mineru.net/apiManage/token",
@@ -802,11 +869,25 @@ class App:
         tk.Label(note, text="    " + self._t("note_llm"),
                  bg=_CARD, fg=_SUBINK, font=self.fonts["small"]).pack(side="left")
 
+        note2 = tk.Frame(sp, bg=_CARD)
+        note2.grid(row=13, column=0, columnspan=2, sticky="w")
+        tk.Label(note2, text=self._t("note_paddle"), bg=_CARD, fg=_SUBINK,
+                 font=self.fonts["small"]).pack(side="left")
+        link2 = tk.Label(note2, text="https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5",
+                         bg=_CARD, fg=_GOLD, font=self.fonts["link"],
+                         cursor="hand2")
+        link2.pack(side="left")
+        link2.bind("<Button-1>", lambda e: self._open_url(
+            "https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5"))
+
         save_row = tk.Frame(sp, bg=_CARD)
-        save_row.grid(row=11, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        save_row.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.btn_update = self._btn(save_row, self._t("btn_update"),
+                                    self._on_check_update, small=True)
+        self.btn_update.pack(side="left")
         self._save_hint = tk.Label(save_row, text="", bg=_CARD, fg=_GOLD,
                                    font=self.fonts["small"])
-        self._save_hint.pack(side="left", padx=(0, 10))
+        self._save_hint.pack(side="left", padx=(10, 0))
         self._btn(save_row, self._t("save"), self._on_save_settings, small=True
                   ).pack(side="right")
 
@@ -1045,6 +1126,9 @@ class App:
     def _collect_settings(self) -> dict:
         return {
             "mineru_token": self.var_token.get(),
+            "ocr_provider": _ENGINE_BY_DISPLAY.get(
+                self.var_engine.get(), "mineru"),
+            "paddleocr_token": self.var_paddle.get(),
             "llm_base_url": self.var_base.get(),
             "llm_key": self.var_key.get(),
             "llm_model": self.var_model.get(),
@@ -1073,6 +1157,25 @@ class App:
             webbrowser.open(url)
         except Exception:
             pass
+
+    # ── 检查更新（工作线程，不卡 UI） ───────────────────────
+
+    def _on_check_update(self):
+        if getattr(self, "_update_checking", False):
+            return
+        self._update_checking = True
+        self.btn_update.config(state="disabled")
+        self._save_hint.config(text=self._t("update_checking"))
+
+        def work():
+            try:
+                from updater import check_for_update
+                r = check_for_update()
+            except Exception as e:
+                r = {"status": "error", "error": str(e), "current": "?"}
+            self._put("update_result", r)
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ── 模型列表在线获取（工作线程，不卡 UI） ─────────────────
 
@@ -1188,7 +1291,15 @@ class App:
         _save_settings(self.settings)
         _apply_settings(self.settings)
 
-        if not self.settings["mineru_token"].strip():
+        engine = self.settings.get("ocr_provider", "mineru")
+        if engine == "paddleocr":
+            if not self.settings.get("paddleocr_token", "").strip():
+                messagebox.showerror(self._t("msg_no_ptoken_t"),
+                                     self._t("msg_no_ptoken"))
+                if not self._settings_open:
+                    self._toggle_settings()
+                return
+        elif not self.settings["mineru_token"].strip():
             messagebox.showerror(self._t("msg_no_token_t"),
                                  self._t("msg_no_token"))
             if not self._settings_open:
@@ -1243,13 +1354,14 @@ class App:
 
     def _worker_main(self):
         try:
-            from stage1_mineru import run_mineru, save_mineru_metadata
+            from ocr_provider import get_provider
             from stage2_hybrid import analyze_structure_hybrid, save_structure
             from stage3_epub import generate_epub
         except Exception as e:
             self._put("fatal", self._t("fatal_load", err=e))
             return
 
+        engine = self.settings.get("ocr_provider", "mineru")
         n_done = 0
         try:
             for i, book in enumerate(self.books):
@@ -1258,7 +1370,7 @@ class App:
                 if book["done"]:
                     continue
                 ok = self._process_book(
-                    i, book, run_mineru, save_mineru_metadata,
+                    i, book, engine, get_provider,
                     analyze_structure_hybrid, save_structure, generate_epub)
                 if ok:
                     n_done += 1
@@ -1271,12 +1383,13 @@ class App:
             return
         self._put("queue_done", self.cancel.is_set(), n_done)
 
-    def _process_book(self, i, book, run_mineru, save_mineru_metadata,
+    def _process_book(self, i, book, engine, get_provider,
                       analyze_structure_hybrid, save_structure,
                       generate_epub) -> bool:
         pdf = Path(book["path"])
-        name = pdf.stem
-        work_dir = pdf.parent / pdf.stem           # 约定：PDF 同目录的同名文件夹
+        # Windows 不允许目录名以空格/点结尾（同 pipeline.py）
+        name = pdf.stem.rstrip(" .") or pdf.stem
+        work_dir = pdf.parent / name                   # 约定：PDF 同目录的同名文件夹
         work_dir.mkdir(parents=True, exist_ok=True)
         out_dir = (Path(self.settings["output_dir"])
                    if self.settings["output_dir"] else pdf.parent)
@@ -1287,7 +1400,8 @@ class App:
 
         translate = bool(self.settings["translate"])
         pages = book["pages"] or 300
-        est1 = max(pages * 0.80, 30)               # 同 pipeline.py 的预估
+        # MinerU 实测 ≈ 0.80 s/页；PaddleOCR 更快（同 pipeline.py 的预估）
+        est1 = max(pages * (0.80 if engine == "mineru" else 0.50), 30)
         est2 = max(pages * 0.14, 15)
         estimates = [est1, est2]
         if translate:
@@ -1303,14 +1417,15 @@ class App:
                 self._put("stage_update", i, stage, title, detail, fraction)
             return cb
 
-        # ── 壹 · MinerU ──
+        # ── 壹 · PDF 解析（MinerU / PaddleOCR） ──
         self._put("book_status", i, self._t("st_s1"), _GOLD_HI)
         t0 = time.time()
         try:
-            mineru_info = run_mineru(str(pdf), str(work_dir),
-                                     ocr=bool(self.settings["ocr"]),
-                                     progress=prog(1, self._t("s1_name")))
-            save_mineru_metadata(str(work_dir), mineru_info)
+            provider = get_provider(engine)
+            mineru_info = provider.parse(str(pdf), str(work_dir),
+                                         ocr=bool(self.settings["ocr"]),
+                                         progress=prog(1, self._t("s1_name")))
+            _save_stage1_metadata(str(work_dir), engine, mineru_info)
         except Exception as e:
             self._put("book_error", i, self._t("fail_mineru", err=e))
             return False
@@ -1439,6 +1554,26 @@ class App:
         elif cmd == "book_status":
             _, i, text, color = msg
             self._set_row_status(self.books[i], text, color)
+
+        elif cmd == "update_result":
+            _, r = msg
+            self._update_checking = False
+            self.btn_update.config(state="normal")
+            self._save_hint.config(text="")
+            if r["status"] == "update_available":
+                if messagebox.askyesno(
+                        self._t("update_new_t"),
+                        self._t("update_new", latest=r["latest"],
+                                ver=r["current"])):
+                    self._open_url(r["url"])
+            elif r["status"] == "latest":
+                messagebox.showinfo(
+                    self._t("update_title"),
+                    self._t("update_latest", ver=r["current"]))
+            else:
+                messagebox.showwarning(
+                    self._t("update_title"),
+                    self._t("update_fail", err=r["error"]))
 
         elif cmd == "stage_update":
             _, i, stage, title, detail, fraction = msg

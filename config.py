@@ -51,6 +51,11 @@ DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEFAULT_OUTPUT_DIR = _env("DEFAULT_OUTPUT_DIR", str(Path(__file__).parent / "output"))
 
 # ============================================================
+# OCR 引擎（Stage 1）：mineru / paddleocr
+# ============================================================
+OCR_PROVIDER = _env("OCR_PROVIDER", "mineru")
+
+# ============================================================
 # MinerU 参数
 # ============================================================
 MINERU_MODEL = _env("MINERU_MODEL", "vlm")
@@ -60,6 +65,18 @@ MINERU_ENABLE_FORMULA = _env_bool("MINERU_ENABLE_FORMULA", True)
 MINERU_ENABLE_TABLE = _env_bool("MINERU_ENABLE_TABLE", True)
 
 # ============================================================
+# PaddleOCR-VL 参数（百度 AI Studio 异步 job API，免费 3000 页/天/模型）
+# ============================================================
+PADDLEOCR_API_URL = _env("PADDLEOCR_API_URL",
+                         "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
+PADDLEOCR_TOKEN = _env("PADDLEOCR_TOKEN")
+PADDLEOCR_MODEL = _env("PADDLEOCR_MODEL", "PaddleOCR-VL-1.6")
+PADDLEOCR_TIMEOUT = int(_env("PADDLEOCR_TIMEOUT", "900"))
+
+# ============================================================
 # 结构分析参数（分块推理的动态分块目标页数）
 # ============================================================
 CHUNK_SIZE = int(_env("CHUNK_SIZE", "12"))
+
+# 全局一致性定级（清洗后的全书标题表一次 LLM 定级，锚点校验；false 关闭）
+GLOBAL_LEVEL_PASS = _env_bool("GLOBAL_LEVEL_PASS", True)

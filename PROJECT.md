@@ -789,3 +789,139 @@ D:\My_Library\
 | 跨语言 | 依赖 OCR 字号精度 | 天然支持（语义不区分语言） |
 | split block | 无处理 | LLM 带上下文可以识别 |
 | 无 TOC 的书 | 回退到字号聚类 | LLM 从正文结构推断 |
+
+---
+
+## 十、v1.2：多引擎 OCR（PaddleOCR-VL）+ 检查更新（2026-07-30，已落地）
+
+### 动机与决策
+
+- Stage 1 不再锁定 MinerU。以 MinerU 的 `content_list` 为**统一契约**，
+  新引擎只需写薄适配层，Stage 2/3/4 零改动。格式统一用**规则**（标签映射 +
+  图注绑定 + 文本清洗），不用 LLM——确定性、零成本，Papers_Converter 已验证。
+- **GLM 不适配**：收费、不返回页眉页脚（书籍元数据缺来源）、裁剪图 URL 约 24h
+  过期、同步接口需 100 页分片。其优势（图注绑定）PaddleOCR 同样具备且免费。
+  `ocr_provider.register()` 留了扩展口。
+- 默认引擎保持 `mineru`（书籍以正文/表格为主，MinerU 跨页表合并最强）；
+  PaddleOCR 为可选引擎（`--engine paddleocr` 或 GUI 下拉）。
+
+### 架构
+
+```
+ocr_provider.py        OcrProvider 协议 + 懒加载注册表（mineru / paddleocr）
+stage1_mineru_provider.py  MinerU 薄包装（行为不变，产物仍落 mineru/）
+stage1_paddleocr.py    百度 AI Studio 异步 job API（PaddleOCR-VL-1.6）
+stage1_layout.py       layout 系引擎共享转换层（移植自 Papers_Converter）
+```
+
+契约要点（适配层必须保证）：`bbox` 为 0-1000 千分位 xyxy 且**必需**
+（popo/convert.py 丢弃无 bbox 块）、`page_idx` 0 起、公式 LaTeX、表格 HTML、
+图片 `img_path` 文件名 + `images_dir` 落盘。
+
+### PaddleOCR 探针实测（teoh2010flame 前 3 页，2026-07-30）
+
+- `prunedResult` 带 `width`/`height`（渲染图像素尺寸，如 1191×1560），
+  `block_bbox` 为像素 xyxy → 精确换算千分位，无需合成 bbox。
+- 表格块直出 HTML（`<table>`，单元格内可含 LaTeX），符合契约。
+- 标签集合与 PP-DocLayout 一致，新增 `vision_footnote`（图下说明文字，
+  按图注候选处理）；`number` → page_number。
+- 图片块 content 为空，裁剪图 URL 在 `markdown.images`（键名内嵌 bbox）。
+- 单任务 ≤1000 页、上传 ≤50MB → fitz 按 200 页切片提交，page_idx 加偏移
+  （手法同 stage1_mineru）。免费配额 3000 页/天/模型，超限 429/错误码 12001。
+
+### PaddleOCR 的脾气（移植自 Papers_Converter 的处理）
+
+- 正文用 Unicode 上下标（LiCoO₂、Li⁺/Na⁺、H₂O）而非 `$...$`：
+  `_unicode_scripts_to_latex` 逐 run 转换，已有 `$...$` 区段不动，
+  下标小数 `$_{0}$.$_{25}$` 合并为 `$_{0.25}$`，标前空格贴回主体。
+  实测 21 页论文转换后残留 0。
+- 图注是独立 `figure_title` 块，必须在适配器内绑回图片块
+  （`stage1_layout._bind_figure_captions`），否则下游分组坍缩；
+  panel 字母标（"A"/"(b)"）丢弃。
+- 已知弱项：跨页续表合并弱于 MinerU（Papers 实测）→ 表格密集书继续用 MinerU。
+
+### 检查更新
+
+- `version.py` 单一版本号来源；`updater.py` 打 GitHub `releases/latest`
+  数值元组比较，所有异常静默降级（离线友好）。
+- GUI 设置页"检查更新"按钮（工作线程 + queue 回主线程），
+  CLI `--version` / `--check-update`。只做通知 + 浏览器打开下载页，
+  不做 exe 自替换（onedir 包自更新风险大，免安装工具定位下通知式足够）。
+
+### 打包注意
+
+`ocr_provider` 用 `importlib` 懒加载 provider，PyInstaller 静态分析扫不到，
+两个 spec 的 hiddenimports 必须显式列 `stage1_mineru_provider /
+stage1_paddleocr / stage1_layout / updater / version / requests`。
+
+### v1.2.1：《必须保卫社会》结构翻车修复（2026-07-31，已落地）
+
+**事故**：PaddleOCR 跑该书后结构全碎。排查链（popo_blocks.json 实证）：
+
+1. 该书目录页码被排成独立 aside_text 数字块（与条目分离），LLM 提取
+   toc_entries 时配对不上页码，瞎编了一套等差数列（真实 1/23/43/65…
+   被编成 1/17/33/51…）；
+2. `_rescue_by_page` 的偏移投票建立在"印刷页↔扫描页偏移大致稳定"上，
+   瞎编页码使偏移票互不相同，众数投票形同随机，±3 sanity 全失败 →
+   8 个幻影标题块被合成到错误页（`rescued: "toc_page"`），文档树被切碎。
+
+**修复**（stage2_common.py）：
+
+- `_repair_toc_pages`（新增）：目录页上条目块与数字块按 bbox y 坐标同行
+  重配真实页码（目录排版里页码恒与条目同行，dy≤25 千分位贪心配对，
+  支持罗马数字）。页码内嵌的版式（MinerU）自动 no-op。
+- `_rescue_by_page` 加众数门槛：偏移众数 <3 票直接放弃救援
+  （偏移票互不相同 = 页码不可信的典型特征，此时幻影块比缺标题更糟）。
+- `_build_anchors` 双形态键：剥尾页码若改变文本（"one 7 JANUARY 1976"
+  的年份 1976 会被误剥），同时保留完整形态锚点，否则正文标题永远锚不上。
+- 目录页标题降格：`_repair_toc_pages` 识别目录页（≥3 条目命中且
+  ≥3 数字块），`_calibrate_levels(toc_pages=...)` 把其上标题块降格为
+  文本——目录条目与锚点天然匹配，进树必在目录页位置切假章节。
+  正文标题密集页（如 民法总论 p555 一章两节同页）数字块只有页脚一个，
+  不会误判。
+- 顺带：PDF 文件名尾空格/点导致 Windows 目录名被静默剥离、
+  `--skip-mineru` 找不到工作目录（pipeline.py / app.py 统一 rstrip）。
+
+回归：tests/test_stage2_toc.py 10 例；民法总论（MinerU 缓存）六编十五章
+不变；本书重跑验证文档树恢复 one–eleven 章节序列。
+
+**后续迭代（同日第二~四轮回归暴露）**：
+
+- `_normalize_title` 加大小写折叠（casefold）：'FOREWORD' 才能前缀命中
+  'Foreword: François Ewald …'；中文无影响。
+- 锚点"富化"会把拆块标题（'nine' + '3 MARCH 1976'）各自补全成同一完整
+  标题 → 重复标题去重必须放在校正循环之后（同页同文只留一个）。
+- 罗马数字页码（ix/xv）属前置部分，与正文偏移 regime 不同：重配时页码
+  置空（匹配即满足，不参与页码救援），否则按正文偏移合成到错误位置。
+- 页码救援的"已满足"判定：锚点完整键精确命中即满足，不再要求位置
+  sanity（完整键是强证据，页码可能来自不同 regime）。
+- `_build_anchors` 层级收敛：恰好两级、高层级 ≤2 个条目且全为无编号
+  plain 形状（LLM 常把 Foreword/Introduction 拔高一级），收敛到多数
+  层级；带"第X编/Part X"形状的不动（真实两部结构）。
+- 根因教训：**LLM 提取的目录页码/层级都不可信**，凡能用页面几何
+  （bbox 同行）和一致性投票确定性推导的，都不要依赖 LLM 输出。
+
+### v1.2.2：民法总论 PaddleOCR 全量验证与加固（2026-07-31，已落地）
+
+首跑（561 页）暴露四类问题，均已修复：
+
+1. **轻量兜底 JSON 截断**：该书目录 ~200 条，`_light_metadata_pass` 单次调用
+   响应超 max_tokens(8192) 被截断 → toc_entries 全丢 → 0 锚点、编层级丢失。
+   修复：失败后拆两个紧凑调用重试（`_LIGHT_META_PROMPT` 不含目录 +
+   `_LIGHT_TOC_PROMPT` 只出 `[text, level, page]` 数组，只采样书首页）。
+2. **PaddleOCR 分片过碎**：固定 200 页/片 → 3 片排队 48 分钟。
+   修复：按平均页体积自适应（单片 ≤45MB、≤1000 页），该书单任务提交，
+   stage1 709s（提速 4 倍）。
+3. **markdown 转义污染**：PaddleOCR 输出 `1\. 要件`、`\[德\]`（实测 214 处
+   `\]`），形状检测 `^\d+\.` 失效 → 列表项被投成 L1 章。修复：适配器在
+   数学区外解转义（`_MD_ESCAPE_RE`，与 Unicode 上下标同一通道）。
+4. **目录页识别要覆盖多形态**：该书简目（独立条目块）+ 详目（点线页码
+   合并 blob 块）并存；`_detect_toc_pages_by_entries` 按"条目行命中 ≥3 +
+   （数字行 ≥3 或占比 ≥50%）+ **印刷页码跨度 >30**"识别，章首页（章标题+
+   本章节标题，印刷页集中同章、跨度≈0）不再被误杀；邻页扩展捞长目录
+   残余页（只列两三编的末页）。
+
+终验：PaddleOCR 版民法总论 **21 单元（6 编 15 章）**，与 MinerU 基准完全一致；
+锚点 172 命中、页码救援 7 处全部合法（偏移 +20、162 票一致）、890 页脚注。
+已知残留（cosmetic）：'Default Title' 空章（popo build_tree 占位）、
+第六编 重复一章（编名页眉被 _PART_HEADER 捞回，与真章扉页相邻同名）。
