@@ -6,6 +6,9 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('tkinterdnd2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# ocr_provider 用 importlib 懒加载 provider，静态分析扫不到，必须显式列出
+hiddenimports += ['ocr_provider', 'stage1_mineru_provider', 'stage1_paddleocr',
+                  'stage1_layout', 'updater', 'version', 'requests']
 
 
 a = Analysis(

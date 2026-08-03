@@ -24,3 +24,6 @@ __pycache__/
 test_book.pdf
 *.epub
 test_book.pdf
+
+# 批量跑书日志
+_batch_logs/

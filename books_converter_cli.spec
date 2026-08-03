@@ -6,7 +6,10 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['mineru', 'fitz', 'openai', 'ebooklib', 'latex2mathml', 'stage4_translate'],
+    hiddenimports=['mineru', 'fitz', 'openai', 'ebooklib', 'latex2mathml', 'stage4_translate',
+                   # ocr_provider 用 importlib 懒加载，静态分析扫不到，必须显式列出
+                   'ocr_provider', 'stage1_mineru_provider', 'stage1_paddleocr',
+                   'stage1_layout', 'updater', 'version', 'requests'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

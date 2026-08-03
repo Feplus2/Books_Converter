@@ -3,13 +3,15 @@ r"""
 Books_Converter — PDF → EPUB 全自动转换管线
 
 用法:
-    python pipeline.py <pdf_path> [--output-dir <dir>] [--ocr/--no-ocr] [--headless]
+    python pipeline.py <pdf_path> [--engine mineru|paddleocr] [--output-dir <dir>] [--ocr/--no-ocr] [--headless]
 
 示例:
     python pipeline.py "D:\books\mybook.pdf"
+    python pipeline.py "D:\books\mybook.pdf" --engine paddleocr
     python pipeline.py "D:\books\mybook.pdf" --output-dir "F:\output"
     python pipeline.py "D:\books\mybook.pdf" --no-ocr   # 文字版 PDF
     python pipeline.py "D:\books\mybook.pdf" --headless # 无界面 JSON 进度（SageRead sidecar）
+    python pipeline.py --check-update                   # 检查新版本
 """
 
 import argparse
@@ -17,6 +19,8 @@ import logging
 import sys
 import time
 from pathlib import Path
+
+import config
 
 # 配置日志
 logging.basicConfig(
@@ -28,7 +32,8 @@ logger = logging.getLogger("pipeline")
 
 from pathlib import Path
 
-from stage1_mineru import run_mineru, save_mineru_metadata, _count_pages
+from stage1_mineru import _count_pages
+from ocr_provider import get_provider, provider_names
 from stage2_hybrid import analyze_structure_hybrid, save_structure
 from stage3_epub import generate_epub
 from progress_headless import HeadlessProgress, emit_error
@@ -56,7 +61,24 @@ def main():
   python pipeline.py book.pdf -o F:\\epubs                    # 指定输出
         """,
     )
-    parser.add_argument("pdf", help="PDF 文件路径")
+    parser.add_argument("pdf", nargs="?", help="PDF 文件路径")
+    parser.add_argument(
+        "--engine",
+        choices=provider_names(),
+        default=None,
+        metavar="ENGINE",
+        help=f"Stage 1 解析引擎（{'/'.join(provider_names())}；默认读 OCR_PROVIDER 配置）",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="打印版本号并退出",
+    )
+    parser.add_argument(
+        "--check-update",
+        action="store_true",
+        help="检查 GitHub 是否有新版本并退出",
+    )
     parser.add_argument(
         "-o", "--output-dir",
         default=None,
@@ -72,7 +94,7 @@ def main():
     parser.add_argument(
         "--skip-mineru",
         action="store_true",
-        help="跳过 MinerU 阶段（使用已有结果）",
+        help="跳过 Stage 1 解析阶段（使用已有 MinerU/PaddleOCR 结果）",
     )
     parser.add_argument(
         "--skip-deepseek",
@@ -101,6 +123,26 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.version:
+        from version import __version__
+        print(f"Books_Converter v{__version__}")
+        sys.exit(0)
+    if args.check_update:
+        from version import __version__
+        from updater import check_for_update
+        r = check_for_update()
+        if r["status"] == "update_available":
+            print(f"发现新版本: v{r['latest']}（当前 v{__version__}）")
+            print(f"下载: {r['url']}")
+        elif r["status"] == "latest":
+            print(f"已是最新版本（v{__version__}）")
+        else:
+            print(f"检查更新失败: {r['error']}")
+        sys.exit(0)
+
+    if not args.pdf:
+        parser.error("缺少 PDF 文件路径")
     if args.headless:
         logging.getLogger().addHandler(_ErrCapture())
 
@@ -112,17 +154,22 @@ def main():
             emit_error(f"PDF 文件不存在: {pdf_path}")
         sys.exit(1)
 
-    book_name = pdf_path.stem
+    # Windows 不允许目录名以空格/点结尾（创建时会被静默剥离，导致
+    # 后续按原名 iterdir 找不到目录），统一剔除
+    book_name = pdf_path.stem.rstrip(" .") or pdf_path.stem
     # 默认输出到 PDF 所在目录
     output_base = Path(args.output_dir) if args.output_dir else pdf_path.parent
     work_dir = output_base / book_name
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    engine = args.engine or config.OCR_PROVIDER
 
     logger.info("=" * 60)
     logger.info(f"  Books_Converter")
     logger.info(f"  输入: {pdf_path}")
     logger.info(f"  书名: {book_name}")
     logger.info(f"  工作目录: {work_dir}")
+    logger.info(f"  解析引擎: {engine}")
     logger.info(f"  OCR: {'强制' if args.ocr else '自动'}")
     logger.info("=" * 60)
 
@@ -134,7 +181,8 @@ def main():
     if args.skip_mineru:
         est_s1 = 1.0
     else:
-        est_s1 = max(total_pages * 0.80, 30)      # 两书实测均值 ≈ 0.80 s/页
+        # MinerU 两书实测均值 ≈ 0.80 s/页；PaddleOCR 实测更快
+        est_s1 = max(total_pages * (0.80 if engine == "mineru" else 0.50), 30)
     est_s2 = max(total_pages * 0.14, 15)          # hybrid 两书实测均值 ≈ 0.14 s/页
     # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
     est_s3 = max(total_pages * 2.0, 30) if args.translate else 3.0
@@ -154,31 +202,33 @@ def main():
     stage_times = {}
 
     try:
-        # ═══ Stage 1: MinerU ══════════════════════════════════════
+        # ═══ Stage 1: 解析引擎（MinerU / PaddleOCR） ══════════════════
+        s1_name = {"mineru": "MinerU", "paddleocr": "PaddleOCR"}.get(engine, engine)
         mineru_info = None
         if not args.skip_mineru:
-            pw.update_stage(1, "MinerU", "正在准备 PDF 解析...")
+            pw.update_stage(1, s1_name, "正在准备 PDF 解析...")
             t0 = time.time()
             try:
-                mineru_info = run_mineru(
+                provider = get_provider(engine)
+                mineru_info = provider.parse(
                     str(pdf_path), str(work_dir), ocr=args.ocr,
-                    progress=lambda detail, fraction=None: pw.update_stage(1, "MinerU", detail, fraction),
+                    progress=lambda detail, fraction=None: pw.update_stage(1, s1_name, detail, fraction),
                 )
-                save_mineru_metadata(str(work_dir), mineru_info)
+                _save_stage1_metadata(str(work_dir), engine, mineru_info)
             except Exception as e:
-                logger.error(f"Stage 1 失败: {e}")
+                logger.error(f"Stage 1 ({engine}) 失败: {e}")
                 logger.error("请检查: ① 网络连接 ② API Token 是否有效 ③ PDF 是否损坏")
                 sys.exit(1)
-            stage_times["MinerU"] = time.time() - t0
-            pw.complete_stage(1, "MinerU", stage_times["MinerU"])
+            stage_times[s1_name] = time.time() - t0
+            pw.complete_stage(1, s1_name, stage_times[s1_name])
         else:
             # 尝试加载已有结果
-            logger.info("跳过 Stage 1，使用已有 MinerU 结果")
-            mineru_info = _load_mineru_cache(work_dir)
+            logger.info("跳过 Stage 1，使用已有解析结果")
+            mineru_info = _load_stage1_cache(work_dir, engine)
             if not mineru_info:
-                logger.error("未找到已有 MinerU 结果，请先运行 Stage 1")
+                logger.error("未找到已有解析结果，请先运行 Stage 1")
                 sys.exit(1)
-            pw.complete_stage(1, "MinerU (缓存)", 0)
+            pw.complete_stage(1, f"{s1_name} (缓存)", 0)
 
         # ═══ Stage 2: 结构分析（Hybrid 引擎） ════════════════════════
         structure = None
@@ -310,33 +360,50 @@ def main():
         raise
 
 
-def _load_mineru_cache(work_dir: Path) -> dict | None:
-    """加载已有的 MinerU 结果"""
-    mineru_dir = work_dir / "mineru"
-    md_files = list(mineru_dir.glob("*.md"))
-    if not md_files:
-        return None
+def _save_stage1_metadata(work_dir: str, engine: str, info: dict) -> None:
+    """保存 Stage 1 阶段的元数据到 <work_dir>/<engine>/metadata.json"""
+    import json
+    meta = {
+        "provider": engine,
+        "markdown_length": len(info.get("markdown", "")),
+        "content_blocks": len(info.get("content_list", [])),
+        "images_dir": info.get("images_dir"),
+    }
+    meta_path = Path(work_dir) / engine / "metadata.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    md_path = md_files[0]
-    with open(md_path, "r", encoding="utf-8") as f:
-        markdown = f.read()
 
-    # 尝试加载 content_list
-    content_list = []
-    cl_files = list(mineru_dir.glob("*content_list*.json"))
-    if cl_files:
-        import json
+def _load_stage1_cache(work_dir: Path, engine: str) -> dict | None:
+    """加载已有的 Stage 1 结果：优先 <work_dir>/<engine>/，
+    其次任意含 content_list 的引擎子目录（如 mineru/、paddleocr/）。"""
+    import json
+    candidates = []
+    preferred = work_dir / engine
+    if preferred.is_dir():
+        candidates.append(preferred)
+    for d in sorted(work_dir.iterdir()):
+        if d.is_dir() and d not in candidates:
+            candidates.append(d)
+
+    for d in candidates:
+        md_files = list(d.glob("*.md"))
+        cl_files = list(d.glob("*content_list*.json"))
+        if not md_files or not cl_files:
+            continue
+        with open(md_files[0], "r", encoding="utf-8") as f:
+            markdown = f.read()
         with open(cl_files[0], "r", encoding="utf-8") as f:
             content_list = json.load(f)
-
-    images_dir = mineru_dir / "images"
-    logger.info(f"  加载已有缓存: {len(markdown):,} 字符 markdown")
-
-    return {
-        "markdown": markdown,
-        "content_list": content_list,
-        "images_dir": str(images_dir) if images_dir.exists() else "",
-    }
+        images_dir = d / "images"
+        logger.info(f"  加载已有缓存 [{d.name}]: {len(markdown):,} 字符 markdown, "
+                    f"{len(content_list)} 个内容块")
+        return {
+            "markdown": markdown,
+            "content_list": content_list,
+            "images_dir": str(images_dir) if images_dir.exists() else "",
+        }
+    return None
 
 
 def _fallback_structure(mineru_info: dict, book_name: str) -> dict:

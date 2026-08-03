@@ -144,15 +144,20 @@ def content_list_to_pages(content_list: list[dict], doc_id: str = "doc") -> dict
             emit("page_footnote", block.get("text"))
 
         elif src_type in _SKIP_TYPES:
-            # 编/篇/卷/部 形状的分隔页文本（MinerU 常误标为 header）捞回为标题，
-            # 同一文本全书只保留首次出现（防每页运行的页眉重复）
+            # 页眉的每种文本只保留首次出现（防每页运行的页眉重复）：
+            # - 编/篇/卷/部 形状：常被引擎误标为 header，直接捞回为标题
+            # - 其余页眉：首次出现保留为 text（它可能其实是节起始页的标题，
+            #   如'参考文献'的章节首页页眉，交给 stage2 锚点晋升裁决）
             if src_type == "header":
                 htext = (block.get("text") or "").strip()
-                if htext and _PART_HEADER.match(htext):
+                if htext:
                     key = re.sub(r"\s+", "", htext)
                     if key not in seen_part_headers:
                         seen_part_headers.add(key)
-                        emit("title", htext)
+                        if _PART_HEADER.match(htext):
+                            emit("title", htext)
+                        else:
+                            emit("text", htext)
                         continue
             n_skipped += 1
             continue
