@@ -155,6 +155,11 @@ STRINGS = {
         "msg_no_ptoken": "已选择 PaddleOCR 引擎，但 Token 为空，无法解析 PDF。\n\n"
                          "请展开「设置」填入 PaddleOCR Token（免费申请，\n"
                          "链接见设置页底部），或把解析引擎改回 MinerU。",
+        "msg_switch_t": "引擎与 Token 不匹配",
+        "msg_switch_to_paddle": "当前引擎是 MinerU，但只填了 PaddleOCR Token。\n\n"
+                                "要切换到 PaddleOCR 引擎开始转换吗？",
+        "msg_switch_to_mineru": "当前引擎是 PaddleOCR，但只填了 MinerU Token。\n\n"
+                                "要切换到 MinerU 引擎开始转换吗？",
         "msg_no_key_t": "LLM API Key 为空",
         "msg_no_key": "LLM API Key 为空：结构分析将降级为按字号的简单目录"
                       "（仍可成书，但目录较粗）。\n\n继续转换？",
@@ -262,6 +267,11 @@ STRINGS = {
         "msg_no_ptoken": "PaddleOCR is selected but its token is empty.\n\n"
                          "Open Settings and paste your PaddleOCR token (free,\n"
                          "link at the bottom of Settings), or switch back to MinerU.",
+        "msg_switch_t": "Engine–token mismatch",
+        "msg_switch_to_paddle": "Engine is MinerU, but only the PaddleOCR token is set.\n\n"
+                                "Switch to PaddleOCR and start?",
+        "msg_switch_to_mineru": "Engine is PaddleOCR, but only the MinerU token is set.\n\n"
+                                "Switch to MinerU and start?",
         "msg_no_key_t": "LLM API key empty",
         "msg_no_key": "Without an LLM API key, structure analysis falls back to a "
                       "rough font-size outline (a book is still produced).\n\n"
@@ -1292,19 +1302,35 @@ class App:
         _apply_settings(self.settings)
 
         engine = self.settings.get("ocr_provider", "mineru")
-        if engine == "paddleocr":
-            if not self.settings.get("paddleocr_token", "").strip():
+        mineru_ok = bool(self.settings["mineru_token"].strip())
+        paddle_ok = bool(self.settings.get("paddleocr_token", "").strip())
+
+        def _switch_engine(display: str) -> None:
+            self.var_engine.set(display)
+            self.settings = self._collect_settings()
+            _save_settings(self.settings)
+            _apply_settings(self.settings)
+
+        if engine == "paddleocr" and not paddle_ok:
+            if mineru_ok and messagebox.askyesno(
+                    self._t("msg_switch_t"), self._t("msg_switch_to_mineru")):
+                _switch_engine("MinerU")
+            else:
                 messagebox.showerror(self._t("msg_no_ptoken_t"),
                                      self._t("msg_no_ptoken"))
                 if not self._settings_open:
                     self._toggle_settings()
                 return
-        elif not self.settings["mineru_token"].strip():
-            messagebox.showerror(self._t("msg_no_token_t"),
-                                 self._t("msg_no_token"))
-            if not self._settings_open:
-                self._toggle_settings()
-            return
+        elif engine == "mineru" and not mineru_ok:
+            if paddle_ok and messagebox.askyesno(
+                    self._t("msg_switch_t"), self._t("msg_switch_to_paddle")):
+                _switch_engine("PaddleOCR-VL")
+            else:
+                messagebox.showerror(self._t("msg_no_token_t"),
+                                     self._t("msg_no_token"))
+                if not self._settings_open:
+                    self._toggle_settings()
+                return
         if not self.settings["llm_key"].strip():
             ok = messagebox.askokcancel(self._t("msg_no_key_t"),
                                         self._t("msg_no_key"))
