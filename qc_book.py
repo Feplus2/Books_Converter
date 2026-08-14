@@ -264,6 +264,19 @@ def check_book(work_dir: str) -> dict:
     n_footnotes = sum(1 for b in cl if b.get("type") == "page_footnote")
     stats["footnotes"] = n_footnotes
 
+    # 公式伪影：uwave（ulem 波浪线命令）是解析引擎数学区失效的可靠脏标记
+    # （高等数学 2026-08-04 paddleocr 强制 OCR 实测 207 处，成书可见裸标记）。
+    # 注：字面 \{ 不算——它是 LaTeX 合法转义，latex2mathml 能正确转成大括号
+    # （本次实测 mineru 版 content_list 403 处 \{ 成品 0 残留）。
+    # 数学书正常产物应为 0；≥10 黄牌，≥100 红牌
+    _all_text = json.dumps(cl, ensure_ascii=False)
+    _n_artifacts = _all_text.count("\\uwave")
+    stats["formula_artifacts"] = _n_artifacts
+    if _n_artifacts >= 100:
+        red.append(f"公式伪影 {_n_artifacts} 处（uwave）——解析引擎对该书的数学区失效，建议换引擎重解析")
+    elif _n_artifacts >= 10:
+        yellow.append(f"公式伪影 {_n_artifacts} 处（uwave）")
+
     verdict = "RED" if red else ("YELLOW" if yellow else "GREEN")
     return {"book": work_dir.name, "engine": arts["engine"],
             "verdict": verdict, "red": red, "yellow": yellow, "stats": stats}
