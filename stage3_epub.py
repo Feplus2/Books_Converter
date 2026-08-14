@@ -181,6 +181,40 @@ def _mathmlify(html_text: str) -> str:
     return _MATH_FULL.sub(repl, html_text)
 
 
+# 显示型公式被解析引擎以单 $ 定界输出的识别（升格为 block 的判定）：
+# 整段唯一数学区 + LaTeX 含显示结构命令 + 前后仅标点/编号。
+# 高等数学 2026-08 实测：840 处例题/推导公式因此被标 inline，贴左带
+# 首行缩进、行内字号——用户观感即"公式不居中"。
+_DISPLAY_CMD_RE = re.compile(r"\\(?:frac|dfrac|sum|int|iint|prod|lim|sqrt|left|right|begin|overline|underbrace|operatorname)")
+_PUNCT_NUM_RE = re.compile(r"[，。、;；:：,.\s（）()\[\]0-9-]+")
+_P_LONE_MATH_RE = re.compile(
+    r'<p>(?P<pre>[^<$]{0,6})'
+    r'(?P<math><math[^>]*display="inline"[^>]*>.*?</math>)'
+    r'(?P<post>[^<]{0,12})</p>',
+    re.S,
+)
+
+
+def promote_lone_display_math(html: str) -> str:
+    """段落级后处理：独占段落的行内显示公式升格为 display="block"。
+
+    只动"前后无实义文字"的整段公式（行内引用如 "$x$，即 …" 的段落不会命中：
+    其 post 含叙述字词）。幂等：display 已是 block 的不匹配该正则。"""
+
+    def repl(m: re.Match) -> str:
+        pre, math_el, post = m.group("pre"), m.group("math"), m.group("post")
+        alt = re.search(r'alttext="([^"]+)"', math_el)
+        latex = alt.group(1) if alt else ""
+        if not (_DISPLAY_CMD_RE.search(latex) and len(latex) > 25):
+            return m.group(0)
+        if _PUNCT_NUM_RE.sub("", pre) or _PUNCT_NUM_RE.sub("", post):
+            return m.group(0)
+        promoted = math_el.replace('display="inline"', 'display="block"', 1)
+        return f"<p>{pre}{promoted}{post}</p>"
+
+    return _P_LONE_MATH_RE.sub(repl, html)
+
+
 # ── 段落合并 ────────────────────────────────────────────────────
 
 def _merge_broken_paragraphs(html: str) -> str:
@@ -1054,7 +1088,7 @@ def _emit_popo_body(units: list, book, spine: list, css,
             chapter = epub.EpubHtml(
                 title=unit["title"], file_name=file_name, lang=lang
             )
-            chapter.content = "\n".join(parts)
+            chapter.content = promote_lone_display_math("\n".join(parts))
             if "<math" in chapter.content:
                 chapter.properties.append("mathml")
             chapter.add_item(css)
@@ -1301,7 +1335,7 @@ def generate_epub(
             file_name=f"front_{i:02d}.xhtml",
             lang="zh",
         )
-        chapter.content = f"<h1>{fm_label}</h1>\n{fm_html}"
+        chapter.content = f"<h1>{fm_label}</h1>\n" + promote_lone_display_math(fm_html)
         chapter.add_item(css)
         book.add_item(chapter)
         spine.append(chapter)
@@ -1379,7 +1413,7 @@ def generate_epub(
             chapter = epub.EpubHtml(
                 title=ch_item["title"], file_name=file_name, lang="zh"
             )
-            chapter.content = ch_html
+            chapter.content = promote_lone_display_math(ch_html)
             chapter.add_item(css)
             book.add_item(chapter)
             spine.append(chapter)
@@ -1406,7 +1440,7 @@ def generate_epub(
             file_name=f"back_{i:02d}.xhtml",
             lang="zh",
         )
-        chapter.content = f"<h1>{bm_label}</h1>\n{bm_html}"
+        chapter.content = f"<h1>{bm_label}</h1>\n" + promote_lone_display_math(bm_html)
         chapter.add_item(css)
         book.add_item(chapter)
         spine.append(chapter)
