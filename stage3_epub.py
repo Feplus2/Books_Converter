@@ -276,8 +276,9 @@ img {
 }
 table {
     border-collapse: collapse;
-    width: 100%;
-    margin: 1em 0;
+    width: fit-content;
+    max-width: 100%;
+    margin: 1em auto;
 }
 table td, table th {
     border: 1px solid #ccc;
@@ -416,12 +417,18 @@ def _render_block_to_html(block: dict, images_dir: str,
         items = block.get("list_items", [])
         if not items:
             return ""
-        items_html = "\n".join(f"<li>{item}</li>" for item in items)
+        items_html = "\n".join(f"<li>{_mathmlify(item)}</li>" for item in items)
         return f"<ul>{items_html}</ul>"
 
     elif btype == "equation":
         latex = block.get("latex", "") or block.get("text", "")
-        return f'<p class="no_indent"><code>{latex}</code></p>'
+        # 兼容 latex/text 字段形态：有 $…$ 定界走 MathML，纯 LaTeX 源码也尝试转换
+        if "$" in latex:
+            return f'<p class="no_indent">{_mathmlify(latex)}</p>'
+        mathml = _latex_to_mathml(latex, True)
+        if mathml is not None:
+            return f'<p class="no_indent">{mathml}</p>'
+        return f'<p class="no_indent"><code class="latex">{_escape_attr(latex)}</code></p>'
 
     elif btype == "code":
         code = block.get("code_body", "") or block.get("text", "")
@@ -541,7 +548,7 @@ def _render_chapter_html(
     """
     ch_level = ch_item.get("level", 2)
     ch_tag = f"h{min(ch_level, 2)}"
-    ch_title_html = _convert_latex_sup(ch_item["title"])
+    ch_title_html = _mathmlify(_convert_latex_sup(ch_item["title"]))
     parts = [f'<{ch_tag} class="chapter-title">{ch_title_html}</{ch_tag}>']
 
     # 构建标题查找表（归一化文本 → 标题信息）
@@ -929,7 +936,7 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 ensure_unit()
                 anchor = f"h{b['id']}"
                 htag = f"h{min(level, 6)}"
-                cur["parts"].append(f'<{htag} id="{anchor}">{convert(display)}</{htag}>')
+                cur["parts"].append(f'<{htag} id="{anchor}">{_mathmlify(convert(display))}</{htag}>')
                 if level == spine_level + 1:
                     cur["subs"].append((level, display, anchor))
             continue
@@ -957,9 +964,9 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 alt = caps[0] if caps else ""
                 html += f'<img src="images/{img_name}" alt="{convert(alt)}"/>'
             for cap in caption_map.get(b["id"], []):
-                html += f'<p class="no_indent"><small>{convert(cap)}</small></p>'
+                html += f'<p class="no_indent"><small>{_mathmlify(convert(cap))}</small></p>'
             for fn in footnote_map.get(b["id"], []):
-                html += f'<p class="no_indent"><small>{convert(fn)}</small></p>'
+                html += f'<p class="no_indent"><small>{_mathmlify(convert(fn))}</small></p>'
             if html:
                 cur["parts"].append(html)
             continue
@@ -970,10 +977,11 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             ensure_unit()
             html = ""
             for cap in caption_map.get(b["id"], []):
-                html += f'<p class="no_indent"><strong>{convert(cap)}</strong></p>'
-            html += b.get("content", "") or ""
+                html += f'<p class="no_indent"><strong>{_mathmlify(convert(cap))}</strong></p>'
+            # 表体 HTML 内的 $…$（MinerU 单元格公式）一并转 MathML
+            html += _mathmlify(b.get("content", "") or "")
             for fn in footnote_map.get(b["id"], []):
-                html += f'<p class="no_indent"><small>{convert(fn)}</small></p>'
+                html += f'<p class="no_indent"><small>{_mathmlify(convert(fn))}</small></p>'
             if html.strip():
                 cur["parts"].append(html)
             continue
@@ -1018,7 +1026,7 @@ def _emit_popo_body(units: list, book, spine: list, css,
         if unit["kind"] == "divider":
             close_group()
             parts = [
-                f'<h1 class="part-title">{_convert_latex_sup(unit["title"])}</h1>'
+                f'<h1 class="part-title">{_mathmlify(_convert_latex_sup(unit["title"]))}</h1>'
             ] + unit["parts"]
             divider = epub.EpubHtml(
                 title=unit["title"],
@@ -1040,7 +1048,7 @@ def _emit_popo_body(units: list, book, spine: list, css,
             chapter_idx += 1
         else:
             parts = [
-                f'<h2 class="chapter-title">{_convert_latex_sup(unit["title"])}</h2>'
+                f'<h2 class="chapter-title">{_mathmlify(_convert_latex_sup(unit["title"]))}</h2>'
             ] + unit["parts"]
             file_name = f"chapter_{chapter_idx:03d}.xhtml"
             chapter = epub.EpubHtml(
@@ -1329,7 +1337,7 @@ def generate_epub(
         # 父级分隔页（编）
         if parent:
             divider_parts = [
-                f'<h1 class="part-title">{_convert_latex_sup(parent["title"])}</h1>'
+                f'<h1 class="part-title">{_mathmlify(_convert_latex_sup(parent["title"]))}</h1>'
             ]
             # 渲染编的引言页（编起始 → 第一个章起始之前）
             if children:

@@ -277,3 +277,24 @@
   重跑（全书 16609 MathML/1 兜底）；两本坏书已从 staging 重跑 stage3
   并原位替换 book.epub，应用内 foliate 实测 1108 math/1044 渲染/0 兜底。
 - **状态**：已修复并验证（exe 已同步 SageRead 双实例 binaries）。
+
+## 病例 014｜QFT 两本书 / stage3 — 表格·表注·图注·标题里的公式漏转
+
+- **现象**：正文段落公式已渲染（病例 013 修复后），但表格单元格、表注/
+  图注、章节标题里的公式仍是裸 `$…$` 源码（如 h4 "26.3 $e^{+}e^{-}
+  \rightarrow$ hadrons"、td "$\left(\frac{1}{2},0\right)$"）。
+- **根因链**：`_mathmlify` 只挂在正文段落渲染路径（_render_popo_body 的
+  seg 处理）；标题（`<hN id>`/chapter-title/part-title 四处发射点）、图注/
+  表注（caption_map/small/strong）、表体（MinerU HTML 原样透传）、列表项
+  均未过公式转换。旧 `_render_block_to_html` 路径同病。
+- **修补**（stage3_epub.py）：
+  - 上述全部发射点补 `_mathmlify`（alt 属性除外——属性值不能放 MathML）；
+  - equation 块兼容 latex/text 字段形态：纯 LaTeX 也尝试转 MathML，
+    失败才退 `<code class="latex">`；
+  - DEFAULT_CSS 表格改 `width: fit-content; max-width: 100%;
+    margin: 1em auto`（窄表按自然宽度居中，宽表占满列宽——旧版
+    width:100% 把所有表拉满整行）。
+- **回归**：两本 QFT 书从 staging 重跑（--skip-mineru --skip-deepseek），
+  EPUB 内 td math 47/41、注 16/31、标题 25/5，裸 $ 清零；应用内 foliate
+  实测单元格/注/标题 MathML 渲染、表格与 block 公式均居中。
+- **状态**：已修复并验证（exe 已重打同步双实例 binaries）。
