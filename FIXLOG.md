@@ -294,6 +294,11 @@
   - DEFAULT_CSS 表格改 `width: fit-content; max-width: 100%;
     margin: 1em auto`（窄表按自然宽度居中，宽表占满列宽——旧版
     width:100% 把所有表拉满整行）。
+- **补丁（同日二轮）**：前置/后置物质走旧路径 `_render_block_to_html`——首轮批量
+  补丁脚本因末对断言失败在写盘前退出，该路径的图注/表注/表体补丁未落盘
+  （高等数学回归实测附录图注裸 $y=rctan x$）；Edit 补齐后高等数学
+  11212 MathML、Standard Model 47/16/25 无回归。GUI spec 同步补
+  latex2mathml hiddenimport+数据文件（GUI 版同病）。
 - **回归**：两本 QFT 书从 staging 重跑（--skip-mineru --skip-deepseek），
   EPUB 内 td math 47/41、注 16/31、标题 25/5，裸 $ 清零；应用内 foliate
   实测单元格/注/标题 MathML 渲染、表格与 block 公式均居中。
