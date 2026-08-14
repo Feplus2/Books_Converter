@@ -397,7 +397,7 @@ def _render_block_to_html(block: dict, images_dir: str,
         if caption:
             if chinese_punct:
                 caption = _convert_punctuation(caption)
-            html += f'<p class="no_indent"><small>{caption}</small></p>'
+            html += f'<p class="no_indent"><small>{_mathmlify(caption)}</small></p>'
         return html
 
     elif btype == "table":
@@ -409,8 +409,8 @@ def _render_block_to_html(block: dict, images_dir: str,
         if caption:
             if chinese_punct:
                 caption = _convert_punctuation(caption)
-            html += f'<p class="no_indent"><strong>{caption}</strong></p>'
-        html += body
+            html += f'<p class="no_indent"><strong>{_mathmlify(caption)}</strong></p>'
+        html += _mathmlify(body)
         return html
 
     elif btype == "list":
