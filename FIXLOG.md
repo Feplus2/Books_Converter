@@ -156,7 +156,7 @@
 - **QC 同步**：page_fuzzy 位置晋升视为满足（系列块的合法锚定方式）。
 - **回归**：刘擎空章 24→1、55/55 锚定、答学友问系列正确嵌套；
   单元测试 32/32。
-- **状态**：已修复并验证。
+- **状态**：已修复并验证。25 45  23
 
 ## 病例 009｜全语料 / 目录页识别升级 + 运行头收敛 + 孤儿编号
 
@@ -257,3 +257,23 @@
 - **回归**：单元测试 40/40；高等数学 140/140、Born a Crime 21/22
   （'Chapter 1: Run' 锚上）、城市与国家财富 16/16。
 - **状态**：已修复并验证。
+
+## 病例 013｜QFT 两本书 / 打包 — 全书公式退化为 LaTeX 源码
+
+- **现象**：A Modern Introduction to QFT / QFT and the Standard Model
+  转出的 EPUB 全书公式都是 `<code class="latex">` 裸 LaTeX 源码（阅读器
+  原样显示源码）；同期高等数学（外部 EPUB，前缀式 MathML）渲染正常，
+  排除阅读器侧嫌疑。
+- **根因链**：latex2mathml 的符号表 `unimathsymbols.txt` 是包内数据文件，
+  `symbols_parser` 运行时 open 读取；`books_converter_cli.spec` 的
+  hiddenimports 只收模块不收数据文件 → frozen exe 里符号表缺失 →
+  每条公式转 MathML 都 FileNotFoundError，被 `_latex_to_mathml` 的
+  `except Exception` 吞成 None → `_mathmlify` 全量走 `<code>` 兜底。
+  无公式书不触发，此前未暴露。
+- **修补**（books_converter_cli.spec）：`datas=collect_data_files('latex2mathml')`
+  （与 papers_converter_cli.spec 收 pypinyin 数据同款方案）。
+- **回归**：archive_viewer 确认新 exe 含 unimathsymbols.txt；旧 exe 从
+  staging 重跑复现（chapter_004: 0 MathML/126 code），新 exe 同 staging
+  重跑（全书 16609 MathML/1 兜底）；两本坏书已从 staging 重跑 stage3
+  并原位替换 book.epub，应用内 foliate 实测 1108 math/1044 渲染/0 兜底。
+- **状态**：已修复并验证（exe 已同步 SageRead 双实例 binaries）。

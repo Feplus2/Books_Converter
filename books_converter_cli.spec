@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Books_Converter headless CLI — SageRead sidecar 打包配置
 # 构建: .venv\Scripts\pyinstaller books_converter_cli.spec --noconfirm
+from PyInstaller.utils.hooks import collect_data_files
+
 a = Analysis(
     ['pipeline.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # latex2mathml 的符号表 unimathsymbols.txt（symbols_parser 运行时 open 读取；
+    # hiddenimports 只收模块不收数据文件——漏打后每条公式转 MathML 都抛
+    # FileNotFoundError 被 _latex_to_mathml 吞掉，全书公式退化为 <code> 裸
+    # LaTeX 源码。QFT 两本书实测事故，2026-08-14）
+    datas=collect_data_files('latex2mathml'),
     hiddenimports=['mineru', 'fitz', 'openai', 'ebooklib', 'latex2mathml', 'stage4_translate',
                    # ocr_provider 用 importlib 懒加载，静态分析扫不到，必须显式列出
                    'ocr_provider', 'stage1_mineru_provider', 'stage1_paddleocr',
