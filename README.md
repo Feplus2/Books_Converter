@@ -54,8 +54,8 @@ PDF → 解析引擎（MinerU / PaddleOCR-VL 云 API，OCR + 版面分析）
 
 ### 方式 A：免安装绿色版（推荐给非技术用户）
 
-1. 到 [Releases](https://github.com/Feplus2/Books_Converter/releases) 下载
-   `Books_Converter-v1.3-win64.zip`（约 63MB）
+1. 到 [Releases](https://github.com/Feplus2/Books_Converter/releases) 下载最新版
+   `Books_Converter-vX.Y.Z-win64.zip`（约 65MB）
 2. 解压，双击 `Books_Converter.exe`
    （首次运行 Windows SmartScreen 会提示"未知发布者"→ 更多信息 → 仍要运行）
 3. 在设置里填两个 Key（见下），把 PDF 拖进窗口，点"开始转换"
