@@ -150,11 +150,16 @@ def _latex_to_mathml(latex: str, display: bool) -> str:
     try:
         from latex2mathml.converter import convert as _l2m
         mathml = _l2m(latex)
-        # 注入源码备份（阅读器不支持 MathML 时的兜底文本）与显示模式
+        # 注入源码备份（阅读器不支持 MathML 时的兜底文本）与显示模式。
+        # 注意 latex2mathml 自带 display="inline"（标签尾部），必须替换值而
+        # 不是另插一份——双 display 属性会在 ebooklib 序列化后胜出 inline，
+        # promote 升格全被抵消（病例 016）。
         mode = "block" if display else "inline"
+        if 'display="' in mathml:
+            mathml = re.sub(r'display="[^"]*"', f'display="{mode}"', mathml, count=1)
         mathml = mathml.replace(
             "<math ",
-            f'<math alttext="{_escape_attr(latex)}" display="{mode}" ',
+            f'<math alttext="{_escape_attr(latex)}" ',
             1,
         )
         return mathml
@@ -186,20 +191,26 @@ def _mathmlify(html_text: str) -> str:
 # 高等数学 2026-08 实测：840 处例题/推导公式因此被标 inline，贴左带
 # 首行缩进、行内字号——用户观感即"公式不居中"。
 _DISPLAY_CMD_RE = re.compile(r"\\(?:frac|dfrac|sum|int|iint|prod|lim|sqrt|left|right|begin|overline|underbrace|operatorname)")
-_PUNCT_NUM_RE = re.compile(r"[，。、;；:：,.\s（）()\[\]0-9-]+")
+# 编号字符集：标点 + 数字 + 圈号编号（①-⑳ ㈠-㈩）
+_PUNCT_NUM_RE = re.compile(r"[，。、;；:：,.\s（）()\[\]0-9-①-⑳㈠-㈩]+")
 _P_LONE_MATH_RE = re.compile(
-    r'<p>(?P<pre>[^<$]{0,6})'
-    r'(?P<math><math[^>]*display="inline"[^>]*>.*?</math>)'
+    r'<p>(?P<pre>[^<$]{0,12})'
+    r'(?P<math><math[^>]*display="inline"[^>]*>(?:(?!</p>).)*?</math>)'
     r'(?P<post>[^<]{0,12})</p>',
     re.S,
 )
+# pre 允许短叙述前缀（"解"/"证"/"双曲正弦"/"例1设"）：剥掉标点数字编号后
+# 剩余 ≤4 字即视为"整段公式"——post 仍严格要求无叙述字，行文行内公式
+# （"…公式 的函数/成立/满足"）一律被 post 挡住，不会误升。
+_LONE_PRE_MAX_CHARS = 4
 
 
 def promote_lone_display_math(html: str) -> str:
     """段落级后处理：独占段落的行内显示公式升格为 display="block"。
 
     只动"前后无实义文字"的整段公式（行内引用如 "$x$，即 …" 的段落不会命中：
-    其 post 含叙述字词）。幂等：display 已是 block 的不匹配该正则。"""
+    其 post 含叙述字词）。pre 允许 ≤4 字短叙述前缀（解/证/双曲正弦/例1设，
+    病例 016：高数附录 74 处此类公式贴左）。幂等：display 已是 block 的不匹配。"""
 
     def repl(m: re.Match) -> str:
         pre, math_el, post = m.group("pre"), m.group("math"), m.group("post")
@@ -207,9 +218,11 @@ def promote_lone_display_math(html: str) -> str:
         latex = alt.group(1) if alt else ""
         if not (_DISPLAY_CMD_RE.search(latex) and len(latex) > 25):
             return m.group(0)
-        if _PUNCT_NUM_RE.sub("", pre) or _PUNCT_NUM_RE.sub("", post):
+        if len(_PUNCT_NUM_RE.sub("", pre)) > _LONE_PRE_MAX_CHARS:
             return m.group(0)
-        promoted = math_el.replace('display="inline"', 'display="block"', 1)
+        if _PUNCT_NUM_RE.sub("", post):
+            return m.group(0)
+        promoted = math_el.replace('display="inline"', 'display="block"')
         return f"<p>{pre}{promoted}{post}</p>"
 
     return _P_LONE_MATH_RE.sub(repl, html)
@@ -278,7 +291,7 @@ h2 {
     font-weight: bold;
 }
 h3 {
-    text-align: left;
+    text-align: center;
     font-size: 1.2em;
     margin: 1.2em 0 0.6em;
     font-weight: bold;
@@ -625,7 +638,9 @@ def _render_chapter_html(
             normalized = _normalize(text) if text else ""
             if normalized and normalized in heading_lookup:
                 h_info = heading_lookup[normalized]
-                htag = f"h{min(h_info['level'], 6)}"
+                # 与 popo 路径同规：章内标题按相对章深度偏移，基准对齐章标题
+                # 实际标签（min(ch_level,2)，ch_level=1 时章为 h1）
+                htag = f"h{min(min(ch_level, 2) + h_info['level'] - ch_level, 6)}"
                 h_text = _convert_latex_sup(h_info['title'])
                 parts.append(f"<{htag}>{h_text}</{htag}>")
                 continue
@@ -969,7 +984,10 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             else:
                 ensure_unit()
                 anchor = f"h{b['id']}"
-                htag = f"h{min(level, 6)}"
+                # 章标题固定 h2（见 _emit_popo_body），章内标题按相对章的
+                # 深度偏移：节=spine_level+1 → h3，小节 → h4，以此类推
+                # （病例 016：旧版 level 直接映射，节与章撞在 h2，层级感丢失）
+                htag = f"h{min(level - spine_level + 2, 6)}"
                 cur["parts"].append(f'<{htag} id="{anchor}">{_mathmlify(convert(display))}</{htag}>')
                 if level == spine_level + 1:
                     cur["subs"].append((level, display, anchor))

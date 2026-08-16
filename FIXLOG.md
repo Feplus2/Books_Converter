@@ -259,6 +259,45 @@
 - **状态**：已修复并验证。
 
 
+## 病例 016｜高等数学 / stage3 — 公式不居中复燃：双 display 属性 + 正则跨段吞并
+
+- **现象**：8/15 修复后用户跑回归仍报"公式不居中、标题 heading level 不对
+  （TOC 是对的）"。审计新 EPUB：2726 处 block 看似正常，但 257 处独占段落的
+  显示公式仍 inline 贴左；且章标题（h2.chapter-title）与节标题（h2）同级，
+  节标题渲染成居中大字与章视觉平级。
+- **根因链（四条独立缺陷，层层掩盖）**：
+  1. **双 display 属性**（`_latex_to_mathml`）：latex2mathml 的 convert()
+     自带 `display="inline"`（标签尾部），我们再插一份 `alttext+display`
+     → `<math alttext display="inline" xmlns display="inline">`。ebooklib
+     序列化去重后 inline 胜出——promote 替换第一个属性后仍被第二个抵消，
+     升格全部落空（$$ 定界公式的 block 同病）；
+  2. **正则跨段吞并**（`_P_LONE_MATH_RE`）：math 部分 `.*?</math>` 懒惰匹配
+     允许跨 `</p>`——前段 math 的 post 超长匹配失败时回溯扩展到**后段的**
+     `</math>`，形成跨段大匹配；repl 按前段 latex 判定不合格即整体原样
+     返回，**后段（如 '(1) f(x)=\left\{...' 例题）永远失去单独匹配机会**。
+     此 bug 单段调用永不暴露（单测全绿、探针全升、整文却漏），且反向造成
+     误升（大匹配判定通过时连带升格前段的行内引用公式）；
+  3. **pre 过严**：`_PUNCT_NUM_RE` 剥空才放行——"解/证/双曲正弦/例1设"等
+     短叙述前缀的整段显示公式 74 处贴左（附录习题答案重灾区）；
+  4. **标题层级映射**：popo 路径 `h{min(level,6)}` 直用结构层级，节与章
+     撞 h2（章标题固定 h2）。
+- **修补**（stage3_epub.py）：
+  - `_latex_to_mathml`：替换 latex2mathml 自带 display 的**值**，不再另插；
+  - `_P_LONE_MATH_RE`：math 部分改 tempered token `(?:(?!</p>).)*?` 禁跨段，
+    `replace(..., 1)` 改全量替换（防御双属性残留）；
+  - pre 放宽：`[^<$]{0,12}` + 剥标点数字编号后 ≤4 字放行（post 保持严格，
+    行文行内引用一律被 post 挡住）；`_PUNCT_NUM_RE` 补圈号 ①-⑳ ㈠-㈩；
+  - 标题层级：章内标题按相对章深度偏移（节 → h3、小节 → h4，两条渲染
+    路径同规）；CSS h3 改居中（贴合原书节标题居中排版）。
+- **回归**：新增 tests/test_stage3_promote.py 12 例（含双 display、跨段吞并
+  场景——后者复现整文/单段分歧）；结构单测 40/40；高数重跑 block 2726→
+  3223（误升消退后净升 497）、独段 inline 257→156（残余=短答案行不该升）、
+  '(1) f(x)' 段升 block、章 h2/节 h3 层级正确、QC formula_artifacts 0。
+- **边界（不接）**：multi_math 13 处——同一公式被引擎拆成两块（block 主体
+  已居中，"+C" 尾巴 inline 残留），合并 MathML 过于脆弱，记引擎层边界。
+- **状态**：已修复并验证。
+
+
 ## 病例 015｜高等数学 / MinerU—stage3 — 显示公式被降级 inline 贴左
 
 - **现象**：8/15 干净重跑后用户仍报"块级公式不居中"（对照外部 z-lib 图片版
