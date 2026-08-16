@@ -27,3 +27,7 @@ test_book.pdf
 
 # 批量跑书日志
 _batch_logs/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
