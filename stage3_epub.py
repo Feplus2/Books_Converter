@@ -360,7 +360,9 @@ math {
     font-size: 1.05em;
 }
 math[display="block"] {
-    display: block;
+    /* 不要写 display: block——它会覆盖 UA 的 display: block math，
+       破坏 MathML 自带的块级居中布局（病例 016 补记：EPUB 里实测居中、
+       Chromium 阅读器里贴左，根因即此） */
     text-align: center;
     margin: 0.8em 0;
 }

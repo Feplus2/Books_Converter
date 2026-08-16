@@ -297,6 +297,30 @@
   已居中，"+C" 尾巴 inline 残留），合并 MathML 过于脆弱，记引擎层边界。
 - **状态**：已修复并验证。
 
+### 病例 016 补记（同日二轮）——第五连环：CSS 破坏 UA 的 block math 布局
+
+- **现象**：上述修复全部落地、EPUB 文件验证无误后，用户在 SageRead 实例里
+  看到的公式**仍然全部贴左**（截图实证）。
+- **排查**（CDP 穿透 foliate 的 closed shadow root 实测 computed style）：
+  block 公式的 `text-align: center` 已生效，但**视觉贴左**——因为
+  DEFAULT_CSS 写了 `math[display="block"] { display: block; }`，把 UA
+  样式表的 `display: block math`（MathML Core 的块级数学布局，内容自动
+  水平居中）覆盖成普通块盒，数学内容 shrink-to-fit 贴左；text-align 管
+  不到数学布局内部。A/B 实证：把 display 恢复 `block math` 后整页公式
+  即刻居中。
+- **修补**：
+  - 转换侧（stage3_epub.py DEFAULT_CSS）：删除 `display: block` 声明，
+    保留 text-align:center 作冗余保险——新产物不再破坏 UA 布局；
+  - 阅读侧（SageRead `utils/style.ts` 注入样式）：显式
+    `math[display="block"] { display: block math; text-align: center; }`
+    ——**存量旧产物无需重转**，注入样式统一兜底（SageRead commit 同步）。
+- **教训**：EPUB 文件级验证（解包看 HTML/CSS）与渲染级验证（阅读器实测）
+  必须都过——本案文件完全正确、渲染却是坏的；"315/315 居中"的验证当时
+  只抽查了 display 属性，没看最终像素。
+- **回归**：实例内打开未重转的 v1.3.2 版高数（旧 CSS），注入样式兜底后
+  习题区行列式/分式/编号公式全部居中，节标题层级正确。
+- **状态**：已修复并验证（exe/zip 重打，Release v1.3.2 资产已更新）。
+
 
 ## 病例 015｜高等数学 / MinerU—stage3 — 显示公式被降级 inline 贴左
 
