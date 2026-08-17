@@ -22,7 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from stage2_common import _build_anchors, _match_anchor, _normalize_title  # noqa
+from stage2_common import (_build_anchors, _detect_toc_pages_by_entries,  # noqa
+                           _match_anchor, _normalize_title)
 
 _SKIP_TYPES = {"header", "footer", "page_number", "aside_text",
                "discarded", "chart"}
@@ -143,8 +144,16 @@ def check_book(work_dir: str) -> dict:
         stats["engine_s2"] = structure.get("engine")
 
         if not toc:
-            red.append("无目录条目（轻量兜底降级？）→ 锚点体系失效，"
-                       "结构只能靠首票")
+            # 点线引导行判据不依赖条目文本，可独立探知印刷目录页是否存在。
+            # 书里本无目录页时，空 toc_entries 是合法状态（伪造目录已被
+            # finish_structure 确定性丢弃），按 docstring 归为黄牌；
+            # 检得出目录页却没有条目才是真降级（红）。
+            if _detect_toc_pages_by_entries([], cl):
+                red.append("检测到目录页但无目录条目（轻量兜底降级？）"
+                           "→ 锚点体系失效，结构只能靠首票")
+            else:
+                yellow.append("无目录条目（本书无印刷目录页，"
+                              "结构走形状栈+编号先验）")
         if meta.get("title") == work_dir.name and not meta.get("authors"):
             yellow.append("metadata 为降级值（书名=文件名且无作者）")
 

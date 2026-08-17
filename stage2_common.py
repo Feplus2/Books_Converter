@@ -69,7 +69,9 @@ _LIGHT_PROMPT = """你是一位图书结构分析师。以下是一本书【开�
 5. toc_entries 从目录页文本中提取，**覆盖目录出现的所有层级**（编/篇/卷、章、节，
    通常 2-3 层），level 从 1 开始递增；保持目录中的原始完整文字
    （OCR 可能有少量错字，选择最合理的版本）；page 填该条目在目录中标注的
-   印刷页码（整数），条目本身不带页码则填 null
+   印刷页码（整数），条目本身不带页码则填 null。
+   **若采样页中不存在目录页，toc_entries 必须输出 []**——严禁根据
+   【全书标题列表】编造、推测或拼凑目录
 6. 所有页码用整数，language 用两位小写代码
 只输出 JSON，不要输出任何解释。
 
@@ -89,6 +91,7 @@ _LIGHT_TOC_PROMPT = """以下是一本书【开头】若干页的文本采样，
 - 覆盖目录出现的所有层级（编/篇/卷、章、节，通常 2-3 层），level 从 1 开始递增
 - 保持目录中的原始完整文字（OCR 可能有少量错字，选择最合理的版本）
 - 印刷页码填整数，条目本身不带页码则填 null
+- 若采样页中不存在目录页，必须输出 []，不要编造或推测目录
 只输出 JSON 数组，不要输出任何解释。
 
 === 以下是文本采样 ===
@@ -263,13 +266,13 @@ def _light_metadata_pass(content_list: list, book_name: str,
         if toc_entries:
             logger.info(f"    紧凑重试挽回目录条目 {len(toc_entries)} 条")
 
-    # 校验/补全
-    result.setdefault("metadata", {})
+    # 校验/补全（LLM 可能把某字段输出成 null，setdefault 挡不住 None → or 防御）
+    result["metadata"] = result.get("metadata") or {}
     result["metadata"].setdefault("title", book_name)
     result["metadata"].setdefault("language", "zh")
-    result.setdefault("front_matter", [])
-    result.setdefault("back_matter", [])
-    result.setdefault("toc_entries", [])
+    result["front_matter"] = result.get("front_matter") or []
+    result["back_matter"] = result.get("back_matter") or []
+    result["toc_entries"] = result.get("toc_entries") or []
     for entry in result["front_matter"] + result["back_matter"]:
         for f in ("page_start", "page_end"):
             try:
@@ -993,6 +996,33 @@ def _detect_toc_pages_by_entries(toc_entries: list, content_list: list) -> set:
     return toc_pages
 
 
+def _forged_toc_fingerprint(toc_entries: list, blocks: list) -> tuple[int, int]:
+    """伪造目录指纹：返回 (可比对条目数, 页码与标题块扫描页完全相等的条目数)。
+
+    真目录条目给印刷页码，与标题块的扫描页通常有非零偏移；书里没有目录页
+    时 LLM 会拿"全书标题列表"编造目录，page 直接抄列表里的扫描页码，
+    全部完全相等。同一锚点的多次命中（运行头）取最早页——条目抄的总是
+    标题首次出现的那一页。
+    """
+    anchors = _build_anchors(toc_entries)
+    if not anchors:
+        return 0, 0
+    first_hit: dict = {}   # 锚点键 → (条目页码, 标题块扫描页)
+    for b in blocks:
+        if b.get("type") != "title" or b.get("level", -1) <= 0:
+            continue
+        m = _match_anchor((b.get("content") or "").strip(), anchors)
+        if not m or m[3] is None:
+            continue
+        pg = b.get("page", 0)
+        if m[0] not in first_hit or pg < first_hit[m[0]][1]:
+            first_hit[m[0]] = (m[3], pg)
+    n_cmp = len(first_hit)
+    n_eq = sum(1 for entry_pg, scan_pg in first_hit.values()
+               if entry_pg == scan_pg)
+    return n_cmp, n_eq
+
+
 _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
@@ -1506,8 +1536,13 @@ def _global_level_pass(blocks: list, book_name: str) -> int:
 
 
 def finish_structure(blocks: list, content_list: list, book_name: str,
-                     work_dir: str, engine: str, progress=None) -> dict:
-    """共享收尾：标注 blocks → 重页丢弃 → 轻量兜底 → 目录修正 → 锚定校正 → 文档树。"""
+                     work_dir: str, engine: str, progress=None,
+                     pdf_toc: list | None = None) -> dict:
+    """共享收尾：标注 blocks → 重页丢弃 → 轻量兜底 → 目录修正 → 锚定校正 → 文档树。
+
+    pdf_toc: PDF outline/书签转成的 toc_entries（确定性元数据，born-digital
+    PDF 的免费真值），非空时取代 LLM 提取的目录作为最高优先级先验。
+    """
     _report = progress or (lambda *a, **kw: None)
     work_dir = Path(work_dir)
 
@@ -1530,12 +1565,43 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     light = _light_metadata_pass(content_list, book_name,
                                  popo_titles=popo_titles, progress=_report)
 
+    # PDF outline/书签是确定性元数据（born-digital PDF 的免费真值），
+    # 优先级高于 LLM 从目录页提取/编造的 toc_entries
+    if pdf_toc:
+        logger.info(f"  PDF outline 先验: {len(pdf_toc)} 条书签目录"
+                    f"（取代 LLM toc_entries）")
+        light["toc_entries"] = pdf_toc
+
     # 目录页码修复（页码与条目分离的版式下 LLM 页码不可信，按 y 对齐重配）
     light["toc_entries"], toc_pages = _repair_toc_pages(
         light.get("toc_entries", []), content_list)
     # 目录页识别补集：blob 合并块/简目等无独立数字块的形态按条目行命中识别
     toc_pages |= _detect_toc_pages_by_entries(
         light.get("toc_entries", []), content_list)
+
+    # ── 伪造目录硬兜底 ──
+    # 书里没有目录页时，LLM 不会返回空 toc_entries，而是拿附带的"全书标题
+    # 列表"编造一份假目录（page 直接抄标题块的扫描页码）。假条目经锚点
+    # 以最高优先级锁死错误层级，形状栈/字号阶梯全部跳过，结构散架。
+    # 判定一（主）：两个目录页识别器都没找到目录页 → 判定无印刷目录；
+    # 判定二（双保险）：≥80% 条目的 page 与对应标题块扫描页完全相等
+    # （真目录给印刷页，与扫描页通常有非零偏移；全等=抄了标题列表页码）。
+    # PDF outline 先验是确定性元数据，不参与伪造判定。
+    if light["toc_entries"] and not pdf_toc:
+        if not toc_pages:
+            logger.warning(
+                f"  未检测到目录页，丢弃 LLM toc_entries"
+                f"（{len(light['toc_entries'])} 条，可能为伪造），"
+                f"改用形状栈+编号先验")
+            light["toc_entries"] = []
+        else:
+            n_cmp, n_eq = _forged_toc_fingerprint(
+                light["toc_entries"], blocks)
+            if n_cmp >= 5 and n_eq >= 0.8 * n_cmp:
+                logger.warning(
+                    f"  目录指纹疑似伪造（{n_eq}/{n_cmp} 条目页码与标题块"
+                    f"扫描页完全相等），丢弃 toc_entries，改用形状栈+编号先验")
+                light["toc_entries"] = []
 
     # 目录页本地检测，修正 front_matter 的 toc 边界（长目录防漏）
     _fix_front_matter_toc(light["front_matter"], _detect_toc_pages(popo_titles))

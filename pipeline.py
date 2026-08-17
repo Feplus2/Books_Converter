@@ -16,6 +16,7 @@ Books_Converter — PDF → EPUB 全自动转换管线
 
 import argparse
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -233,6 +234,10 @@ def main():
         # ═══ Stage 2: 结构分析（Hybrid 引擎） ════════════════════════
         structure = None
         if not args.skip_deepseek:
+            # PDF 书签（outline）是 born-digital PDF 的免费目录真值，先验注入
+            pdf_toc = _read_pdf_outline(pdf_path)
+            if pdf_toc:
+                logger.info(f"  PDF 书签: {len(pdf_toc)} 条（作为目录先验注入）")
             pw.update_stage(2, "Hybrid", "正在准备结构分析...")
             t0 = time.time()
             try:
@@ -242,6 +247,7 @@ def main():
                     str(work_dir),
                     progress=lambda detail, fraction=None: pw.update_stage(2, "Hybrid", detail, fraction),
                     max_pages=args.max_pages,
+                    pdf_toc=pdf_toc,
                 )
                 save_structure(structure, str(work_dir))
             except Exception as e:
@@ -358,6 +364,30 @@ def main():
         if args.headless:
             emit_error(str(e) or _ErrCapture.first or "转换失败")
         raise
+
+
+def _read_pdf_outline(pdf_path: Path) -> list:
+    """PDF outline/书签 → toc_entries 格式的目录先验。
+
+    born-digital PDF（如 LaTeX 排版直接导出的书）自带书签，是免费的结构
+    真值，优先级高于 LLM 从目录页提取（或编造）的 toc_entries。
+    书签目标是 PDF 物理页（get_toc 返回 1 起页码），与扫描页码同 regime；
+    扫描本通常没有书签 → 返回 []，不影响原流程。
+    """
+    try:
+        import fitz
+        with fitz.open(str(pdf_path)) as doc:
+            toc = doc.get_toc(simple=True)
+    except Exception as e:
+        logger.warning(f"读取 PDF 书签失败: {e}")
+        return []
+    out = []
+    for lv, title, page in toc:
+        title = re.sub(r"\s+", " ", str(title)).strip()
+        if title and page >= 1:
+            out.append({"text": title, "level": max(int(lv), 1),
+                        "page": int(page)})
+    return out
 
 
 def _save_stage1_metadata(work_dir: str, engine: str, info: dict) -> None:

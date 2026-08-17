@@ -386,3 +386,32 @@
   EPUB 内 td math 47/41、注 16/31、标题 25/5，裸 $ 清零；应用内 foliate
   实测单元格/注/标题 MathML 渲染、表格与 block 公式均居中。
 - **状态**：已修复并验证（exe 已重打同步双实例 binaries）。
+
+## 病例 017｜Calculus Made Easy（Gutenberg 公版书）/ stage2 — 无目录书 LLM 编造假目录，层级毒化
+
+- **现象**：born-digital 公版书无印刷目录页，轻量元数据 pass 的 LLM
+  不返回空 toc_entries，而是拿 prompt 附带的【全书标题列表】编造一份
+  假目录（page 直接抄标题块的扫描页码）。假条目经锚点以最高优先级锁死
+  错误层级，形状栈/字号阶梯全被跳过，文档树结构散架。
+- **根因链**：LLM 面对"提取目录"指令不会空手而归——采样页里没有目录页，
+  就拿现成的标题列表拼一份；且 page 抄扫描页（真目录应给印刷页，与扫描页
+  通常有非零偏移），形成确定性的伪造指纹。
+- **修补**：
+  - stage2_common.py `finish_structure` 伪造目录双判定硬兜底：
+    判定一（主）两个目录页识别器均未命中 → 判定无印刷目录，丢弃 LLM
+    toc_entries；判定二（双保险）`_forged_toc_fingerprint`——≥5 条可比对
+    且 ≥80% 条目页码与标题块扫描页完全相等 → 丢弃。丢弃后回退
+    形状栈+编号先验路径；
+  - `_LIGHT_PROMPT` / `_LIGHT_TOC_PROMPT` 软约束：无目录页必须输出 []，
+    严禁编造（软约束不足以依赖，故需硬兜底）；
+  - `setdefault` → `or` 防御：LLM 把字段输出成 null 时 setdefault 挡不住
+    （None 不是缺失键）；
+  - pipeline.py `_read_pdf_outline`：fitz get_toc 读取 PDF 书签
+    （born-digital PDF 的免费结构真值，1 起物理页码与扫描页同 regime），
+    经 stage2_hybrid 透传 `pdf_toc`，非空时取代 LLM toc_entries 且不参与
+    伪造判定；扫描本无书签 → 返回 []，原流程不变；
+  - qc_book.py 连带：无目录书不再当硬错误，降为黄牌提示。
+- **回归**：tests/test_stage2_toc.py 新增伪造指纹用例，全套 41/41 +
+  stage3 12/12 绿；伪造条目回放走丢弃路径实测通过；Calculus Made Easy
+  （Gutenberg #33283）60 页重转目录两级正确、477 MathML 居中。
+- **状态**：已修复并验证（源码路径；exe 重打与 SageRead 同步随下次发版进行）。

@@ -702,6 +702,25 @@ def test_apply_global_levels_plain_floor():
     assert rows[0]["level"] == 3           # LLM 给 1，底线 3 钳住
 
 
+def test_forged_toc_fingerprint():
+    """伪造目录指纹（Integral Calculus Made Easy 案例：674 页无目录页，
+    LLM 拿全书标题列表编造 60 条 toc_entries，page 全抄标题块扫描页码）。
+    全等 = 伪造；真目录给印刷页码，与扫描页有非零偏移 → 不相等。"""
+    from stage2_common import _forged_toc_fingerprint
+    blocks = [_title(f"Chapter {i}", i * 10, id_=i) for i in range(1, 7)]
+    forged = [{"text": f"Chapter {i}", "level": 1, "page": i * 10}
+              for i in range(1, 7)]
+    n_cmp, n_eq = _forged_toc_fingerprint(forged, blocks)
+    assert n_cmp == 6 and n_eq == 6          # 全等 → 伪造特征
+    real = [{"text": f"Chapter {i}", "level": 1, "page": i * 10 - 7}
+            for i in range(1, 7)]
+    n_cmp, n_eq = _forged_toc_fingerprint(real, blocks)
+    assert n_cmp == 6 and n_eq == 0          # 一致偏移 → 真目录
+    # 无页码条目不可比对
+    assert _forged_toc_fingerprint(
+        [{"text": "Chapter 1", "level": 1, "page": None}], blocks) == (0, 0)
+
+
 # ──────────────────────────────────────────────────────────────
 
 def _run_all():

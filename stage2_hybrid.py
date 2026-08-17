@@ -296,11 +296,13 @@ def run_inference_hybrid(content_list: list, book_name: str,
 
 
 def analyze_structure_hybrid(content_list: list, book_name: str, work_dir: str,
-                             progress=None, max_pages: int | None = None) -> dict:
+                             progress=None, max_pages: int | None = None,
+                             pdf_toc: list | None = None) -> dict:
     """Hybrid 引擎的结构分析主入口（无需 PDF，无需 GPU）。
 
     与早期 Popo 引擎的区别仅在标注 blocks 的来源（DeepSeek 代替
     本地 VLM），此后的轻量兜底/锚点校正/文档树完全一致。
+    pdf_toc: PDF outline/书签转成的 toc_entries 先验（见 finish_structure）。
     """
     _report = progress or (lambda *a, **kw: None)
     work_dir = Path(work_dir)
@@ -315,7 +317,8 @@ def analyze_structure_hybrid(content_list: list, book_name: str, work_dir: str,
     blocks = run_inference_hybrid(content_list, book_name, progress=_report)
 
     return finish_structure(blocks, content_list, book_name, work_dir,
-                            engine="hybrid", progress=progress)
+                            engine="hybrid", progress=progress,
+                            pdf_toc=pdf_toc)
 
 
 __all__ = ["analyze_structure_hybrid", "save_structure"]
