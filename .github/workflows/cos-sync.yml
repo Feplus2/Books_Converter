@@ -1,0 +1,50 @@
+name: Sync release to Tencent COS
+
+# Release 发布（含 draft 转正式）后自动把安装包同步到国内 COS 镜像，
+# 官网「高速下载」按钮随即指向新版本。也可手动触发补同步历史版本。
+# 需要的 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（CAM 子用户，仅授 COS）。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步的 Release tag（如 v0.2.1）"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cos-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -e
+          mkdir -p assets
+          gh release download "$TAG" --dir assets
+          # 只要安装包本体：剔除签名/更新清单/校验类小文件（官网 countable 同口径）
+          rm -f assets/*.sig assets/*.json assets/*.blockmap assets/*.txt
+          ls -lh assets
+
+      - name: Upload to Tencent COS
+        env:
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(assets/*)
+          if [ ${#files[@]} -eq 0 ]; then echo "no binary assets, nothing to upload"; exit 0; fi
+          pip install -q coscmd
+          coscmd config -a "$TENCENT_COS_SECRET_ID" -s "$TENCENT_COS_SECRET_KEY" \
+            -b sageread-dl-1444623537 -r ap-guangzhou
+          for f in "${files[@]}"; do
+            echo "== upload: $(basename "$f")"
+            coscmd upload "$f" "/$(basename "$f")"
+          done
