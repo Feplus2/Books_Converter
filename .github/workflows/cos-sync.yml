@@ -27,7 +27,7 @@ jobs:
         run: |
           set -e
           mkdir -p assets
-          gh release download "$TAG" --dir assets
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir assets
           # 只要安装包本体：剔除签名/更新清单/校验类小文件（官网 countable 同口径）
           rm -f assets/*.sig assets/*.json assets/*.blockmap assets/*.txt
           ls -lh assets
