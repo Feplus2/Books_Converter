@@ -42,11 +42,12 @@ jobs:
           files=(assets/*)
           if [ ${#files[@]} -eq 0 ]; then echo "no binary assets, nothing to upload"; exit 0; fi
           pip install -q coscmd
-          # 跨境链路调优：10MB 分片 + 10 线程 + 分片级重试 10 次。
-          # GitHub runner→COS 跨境偶发 UserNetworkTooSlow（2026-08-18 实测
-          # 默认 1MB 分片下 66MB 传 51 分钟被 COS 断连，exit 255）
+          # 跨境链路调优：走 COS 全球加速端点（传输加速已对桶开启）+ 10MB 分片 +
+          # 10 线程 + 分片级重试 10 次。GitHub runner→COS 跨境偶发
+          # UserNetworkTooSlow（2026-08-18 实测 51 分钟被断连两次后开启加速端点）
           coscmd config -a "$TENCENT_COS_SECRET_ID" -s "$TENCENT_COS_SECRET_KEY" \
-            -b sageread-dl-1444623537 -r ap-guangzhou \
+            -b sageread-dl-1444623537 \
+            -e sageread-dl-1444623537.cos.accelerate.myqcloud.com \
             -m 10 -p 10 --retry 10 --timeout 120
           for f in "${files[@]}"; do
             name="$(basename "$f")"
