@@ -59,3 +59,30 @@ jobs:
             done
             if [ "$ok" != 1 ]; then echo "FAILED: $name"; exit 1; fi
           done
+
+      # 只保留最新版：按本仓库产品前缀限定清理范围，别动其他产品的包
+      - name: Prune stale packages in COS
+        env:
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(assets/*)
+          if [ ${#files[@]} -eq 0 ]; then exit 0; fi
+          coscmd config -a "$TENCENT_COS_SECRET_ID" -s "$TENCENT_COS_SECRET_KEY" \
+            -b sageread-dl-1444623537 -e cos.accelerate.myqcloud.com >/dev/null
+          case "${{ github.repository }}" in
+            *better-sageread) PREFIX="Better.SageRead_" ;;
+            *Books_Converter) PREFIX="Books_Converter-v|books_converter-cli-v" ;;
+            *) echo "unknown repo, skip prune"; exit 0 ;;
+          esac
+          keep="$(mktemp)"
+          for f in "${files[@]}"; do basename "$f"; done | sort > "$keep"
+          if [ ! -s "$keep" ]; then echo "keep list empty, abort prune"; exit 1; fi
+          coscmd list | sed 's/^ *//' | cut -d' ' -f1 | grep -E "^(${PREFIX})" | while read -r obj; do
+            if [ -n "$obj" ] && ! grep -qxF "$obj" "$keep"; then
+              echo "prune: $obj"
+              coscmd delete -f "/$obj" || true
+            fi
+          done
