@@ -377,11 +377,42 @@ def _edit_distance_le(a: str, b: str, limit: int) -> int:
 
 
 # 目录条目/行尾页码（点线、空格、斜杠、破折号引导）：'xxx …… 60'、'xxx / 060'
-_TRAIL_PAGE_RE = re.compile(r"[\s.…·_/—–]+\d+\s*$")
+_TRAIL_PAGE_RE = re.compile(r"[\s.…·_/／—–]+\d+\s*$")
 
 
 def _strip_trailing_page(text: str) -> str:
     return _TRAIL_PAGE_RE.sub("", (text or "").strip()).strip()
+
+
+# 扫描本第三方自制书签的典型形态：'标题／页码'（全角／或半角 / + 印刷页码）
+_JUNK_BOOKMARK_RE = re.compile(r"[/／]\s*\d+\s*$")
+
+
+def _sanitize_pdf_toc(pdf_toc: list) -> list:
+    """PDF 书签先验清洗：识别并拒收'标题／页码'平级假目录。
+
+    扫描本的自制书签常把印刷页码粘在标题里（'第一章 函数与极限／1'）且
+    level 全平——这不是结构真值：采用后页码会经锚点富化（b[content]=m[2]）
+    粘进正文标题，全平层级把目录压成一条一章（病例019 高等数学实测
+    193/198 条命中，目录 72 条碎成 191 条）。≥80% 条目带页码尾巴即整体
+    丢弃，回退 LLM 目录提取（伪造指纹兜底仍生效）；零散尾巴逐条剥除。
+    """
+    if not pdf_toc:
+        return []
+    n = len(pdf_toc)
+    n_junk = sum(1 for e in pdf_toc
+                 if _JUNK_BOOKMARK_RE.search((e or {}).get("text") or ""))
+    if n >= 5 and n_junk >= 0.8 * n:
+        logger.warning(
+            f"  PDF 书签疑似'标题／页码'假目录（{n_junk}/{n} 条带页码尾巴），"
+            f"丢弃 outline 先验，回退 LLM 目录提取")
+        return []
+    out = []
+    for e in pdf_toc:
+        text = _JUNK_BOOKMARK_RE.sub("", (e.get("text") or "").strip()).strip()
+        if text:
+            out.append({**e, "text": text})
+    return out
 
 
 def _build_anchors(toc_entries: list) -> list:
@@ -1566,7 +1597,10 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
                                  popo_titles=popo_titles, progress=_report)
 
     # PDF outline/书签是确定性元数据（born-digital PDF 的免费真值），
-    # 优先级高于 LLM 从目录页提取/编造的 toc_entries
+    # 优先级高于 LLM 从目录页提取/编造的 toc_entries；但扫描本自制书签
+    # 可能是'标题／页码'假目录，先过清洗闸门
+    if pdf_toc:
+        pdf_toc = _sanitize_pdf_toc(pdf_toc)
     if pdf_toc:
         logger.info(f"  PDF outline 先验: {len(pdf_toc)} 条书签目录"
                     f"（取代 LLM toc_entries）")

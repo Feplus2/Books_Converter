@@ -474,3 +474,33 @@
   字且非标题形状仍可能误并（链长 6 兜底）；④ 修补点 2（filter_contd
   跨页首 title）与 3（qc 段落级检查）未做。
 - **状态**：已修复并验证（2026-08-30；与 SageRead 翻译侧各自独立生效）。
+
+### 追记（2026-08-31）｜高数 TOC 稀碎疑案——合并改动洗清，真凶是病例017 的 PDF 书签先验
+
+- **现象**：用户用最新代码重转《高等数学》（MinerU+hybrid），EPUB 导航
+  目录从 72 条（章/节两级）碎成 191 条扁平垃圾条目（"一、映射／1"
+  "习题1-2／26" 等印刷目录页行带页码尾巴），正文标题也带"／页码"。
+- **洗清合并**：同一份 stage2 产物（structure.json + popo_blocks.json）
+  灌进新旧两版 stage3_epub.py 对拍，nav TOC 逐字节相同（各 191 条）——
+  本病例的合并改动不背锅；合并本来就把 h 标签当中间断链硬边界
+  （test_non_adjacent_not_merged），本轮另补 test_heading_tag_not_swallowed
+  锁死。
+- **根因链**：该 PDF 自带第三方自制书签，形态为"标题／页码"（全角／+
+  印刷页码）且 level 全 1 → 病例017（463572a）引入的 `_read_pdf_outline`
+  把 PDF 书签当"确定性真值"**无条件取代** LLM toc_entries，伪造目录硬
+  兜底又被 `not pdf_toc` 守卫跳过 → `_TRAIL_PAGE_RE` 不含全角／剥不掉
+  页码尾巴 → 锚点富化 `b["content"]=m[2]` 把脏书签文本写进正文标题块
+  → `_spine_from_toc` 见全平层级把 174 个书签行全切成章。旧版（08-17）
+  转换早于 463572a，LLM 从印刷目录页提取的条目干净带层级，故 TOC 正常。
+- **修复**：stage2_common 新增 `_sanitize_pdf_toc`（≥80% 条目带"／页码"
+  尾巴即整体拒收，回退 LLM 目录提取；零散尾巴逐条剥除），挂在
+  finish_structure 采用 pdf_toc 之前；`_TRAIL_PAGE_RE` 与 stage3
+  `_build_toc_lookup` 的展示清洗同步补全角／。`not pdf_toc` 守卫保留
+  （合法 PDF 书签的 page 本就是物理页，过指纹判定必误伤）。
+- **回归**：tests 27/27（merge，+2）+ 44/44（toc，+3）+ 12/12（promote）
+  绿；真实脏书签（198 条，即事故 structure.json 的 toc_entries 真身）
+  注入重跑 stage2+stage3：书签被拒收（日志"193/198 条带页码尾巴"），
+  LLM 目录 144 条层级 1/2/3 干净，nav 72 条与旧版逐条一致（仅 4 条前页/
+  附录标签措辞差异，LLM 固有波动），正文 h2/h3/h4/h5 层级正常、全书无
+  "／页码"残留；合并函数零改动（git diff 仅触及 _build_toc_lookup 一行
+  正则与 stage2），必须保卫社会 267 处合并无回吐机制。

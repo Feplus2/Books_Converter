@@ -206,6 +206,28 @@ class GuardTest(unittest.TestCase):
         out, n = merge(html)
         self.assertEqual(n, 0)
 
+    def test_heading_tag_not_swallowed(self):
+        """标题标签原样保留、不被并进相邻段落；疑似标题段不作累积头
+        （病例019 排查锁回归：合并永不跨 h 标签边界）"""
+        html = ("<p>上一段在标题前的话没有说完</p>\n"
+                "<h2>第三节 函数的极限</h2>\n"
+                "<p>映射是现代数学中的一个基本概念而函数是微积分的研究对象</p>\n"
+                "<p>第一节 映射与函数</p>\n"
+                "<p>本节主要介绍映射函数及有关概念函数的性质与运算等</p>")
+        out, n = merge(html)
+        self.assertEqual(n, 0)
+        self.assertIn("<h2>第三节 函数的极限</h2>", out)
+        self.assertIn("<p>第一节 映射与函数</p>", out)
+
+
+class TocLookupTest(unittest.TestCase):
+    def test_fullwidth_slash_page_stripped(self):
+        """目录条目展示文本剥'标题／页码'尾巴（病例019：扫描本自制书签形态）"""
+        from stage3_epub import _build_toc_lookup, _enrich_title
+        lookup = _build_toc_lookup(
+            [{"text": "第一章 函数与极限／1", "level": 1, "page": 16}])
+        self.assertEqual(_enrich_title("第一章", lookup), "第一章 函数与极限")
+
 
 class VisibleTextTest(unittest.TestCase):
     def test_entity_unescaped(self):

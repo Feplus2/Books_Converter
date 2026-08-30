@@ -873,7 +873,7 @@ def _build_toc_lookup(toc_entries: list) -> dict:
         raw = (e.get("text") or "").strip()
         if not raw:
             continue
-        display = re.sub(r'[\s.…·_]+\d+\s*$', '', raw).strip()
+        display = re.sub(r'[\s.…·_/／—–]+\d+\s*$', '', raw).strip()
         key = _normalize(display)
         if key and key not in lookup:
             lookup[key] = display

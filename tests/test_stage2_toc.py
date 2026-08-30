@@ -722,6 +722,46 @@ def test_forged_toc_fingerprint():
 
 
 # ──────────────────────────────────────────────────────────────
+# _sanitize_pdf_toc / 全角／页码尾巴（病例019：高等数学 PDF 自制书签
+# '标题／页码' 平级假目录被当作 outline 真值采用 → TOC 72 条碎成 191 条）
+# ──────────────────────────────────────────────────────────────
+
+def test_strip_trailing_page_fullwidth_slash():
+    from stage2_common import _strip_trailing_page
+    assert _strip_trailing_page("第一章 函数与极限／1") == "第一章 函数与极限"
+    assert _strip_trailing_page("第二节 数列的极限 …… 18") == "第二节 数列的极限"
+    # 标题本身以数字结尾、无分隔符的不误剥
+    assert _strip_trailing_page("习题1-10") == "习题1-10"
+
+
+def test_sanitize_pdf_toc_junk_rejected():
+    """'标题／页码'假书签 ≥80% 命中即整体丢弃（高等数学实测 193/198）。"""
+    from stage2_common import _sanitize_pdf_toc
+    junk = [{"text": t, "level": 1, "page": p} for t, p in [
+        ("封面", 1), ("第一章 函数与极限／1", 16), ("第一节 映射与函数／1", 16),
+        ("一、映射／1", 16), ("二、函数／3", 18), ("习题1-1／16", 31),
+        ("第二节 数列的极限／18", 33), ("一、数列极限的定义／18", 33),
+        ("二、收敛数列的性质／23", 38), ("习题1-2／26", 41)]]
+    assert _sanitize_pdf_toc(junk) == []
+
+
+def test_sanitize_pdf_toc_clean_kept_stray_stripped():
+    """born-digital 真书签原样保留（层级不动）；个别页码尾巴逐条剥除。"""
+    from stage2_common import _sanitize_pdf_toc
+    good = [{"text": "Preface", "level": 1, "page": 1},
+            {"text": "Chapter 1 Introduction", "level": 1, "page": 9},
+            {"text": "1.1 Background", "level": 2, "page": 10},
+            {"text": "Appendix C／301", "level": 1, "page": 320}]
+    out = _sanitize_pdf_toc(good)
+    assert [e["text"] for e in out] == [
+        "Preface", "Chapter 1 Introduction", "1.1 Background", "Appendix C"]
+    assert out[2]["level"] == 2
+    # 空输入 / 剥空条目
+    assert _sanitize_pdf_toc([]) == []
+    assert _sanitize_pdf_toc(None) == []
+
+
+# ──────────────────────────────────────────────────────────────
 
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
