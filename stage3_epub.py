@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 
 # ── 标点与正则常量 ──────────────────────────────────────────────
 
-_SENTENCE_END = re.compile(r'[。！？…～;:。」』）\)】""\'?!]\s*$')
+_SENTENCE_END = re.compile(r'[。！？…～;:：；.。」』）\)】""\'?!]\s*$')
 # 脚注标记（①②③...）结尾 → 段落完整，不应合并
 _FOOTNOTE_END = re.compile(r'[①②③④⑤⑥⑦⑧⑨⑩]\s*$')
-_BROKEN_P = re.compile(
-    r'<p>([^<]*?)</p>\s*\n?\s*<p>([^<]*?)</p>',
-    re.DOTALL,
-)
+# 段落匹配：段内允许任意内联标记（math span/sup/em/a 等）。本管线 <p> 内
+# 不嵌块级元素（必须保卫社会/高等数学产物 grep 实证，仅 1 处 img 例外），
+# 非贪婪匹配到首个 </p> 即止。
+_P_TAG = re.compile(r'<p(?:\s([^>]*))?>(.*?)</p>', re.DOTALL)
 # MinerU LaTeX 风格上标：$^{①}$ $^{②}$ 等
 _LATEX_SUP = re.compile(r'\$\^\{(.+?)\}\$')
 # 脚注标记（①②③...）后紧跟编号列表项（1. 2. 等）→ 需要分段
@@ -228,41 +228,170 @@ def promote_lone_display_math(html: str) -> str:
     return _P_LONE_MATH_RE.sub(repl, html)
 
 
-# ── 段落合并 ────────────────────────────────────────────────────
+# ── 段落合并（病例 018：信号制重写） ────────────────────────────
+#
+# 合并条件 = (p1 非句末标点收尾 OR p2 小写字母起首 OR p2 极短碎片)
+#            AND NOT 公式例外（p1/p2 任一为零叙述字的孤公式段）
+#            AND NOT 既有护栏（p1 脚注标记结尾 / p2 编号开头短段 / 疑似标题）
+#            AND NOT 短段碎片闸（p1 <10 可见字且不以延续标点收尾）
+# 拼接口径同 _dehyphen_join：英文断词去连字符、英-英补空格、中文直拼。
 
-def _merge_broken_paragraphs(html: str) -> str:
-    """合并因跨页扫描而异常断裂的段落"""
-    prev = None
-    while prev != html:
-        prev = html
-        html = _BROKEN_P.sub(_merge_if_broken, html)
-    return html
+# 单段连续合并次数上限：诗歌/信件/目录等无标点短行排的防过度合并兜底
+# （自然跨页断段链长 2-3，《必须保卫社会》实测 265 对几乎全为 2 段链）
+_MERGE_CHAIN_MAX = 6
+# p2 小写字母起首（允许前导开引号/开括号）——英文跨页续行强信号
+_LOWER_START = re.compile(r'^[「"\'(\[“‘]*[a-z]')
+# 短段允许的延续收尾标点（逗号/冒号/分号/破折/连字符）
+_CONT_END = re.compile(r'[,，、:：;；—–-]$')
+_TAG_STRIP = re.compile(r'<[^>]+>')
 
 
-def _merge_if_broken(m: re.Match) -> str:
-    p1 = m.group(1).strip()
-    p2 = m.group(2).strip()
-    if not p2:
-        return m.group(0)
-    # 第一段以脚注标记结尾（①②③...）→ 段落完整，不合并
-    if _FOOTNOTE_END.search(p1):
-        return m.group(0)
-    # 第二段以编号开头（如 "2."、"一、"）且较短 → 可能是新条目，不合并
-    if re.match(r'^\d+[\.\、]', p2) and len(p2) <= 30:
-        return m.group(0)
-    # 第一段不以句末标点结尾 → 合并
-    if not _SENTENCE_END.search(p1) and not _looks_like_heading(p1):
-        return f"<p>{p1}{p2}</p>"
-    # 第二段极短（扫描跨页碎片）→ 合并
-    if len(p2) <= 30 and not _looks_like_heading(p2):
-        return f"<p>{p1}{p2}</p>"
-    return m.group(0)
+def _visible_text(inner: str) -> str:
+    """段内 HTML → 可见文本（合并判定信号用，实体反转义、空白归一）"""
+    import html as _h
+    return re.sub(r'\s+', ' ', _h.unescape(_TAG_STRIP.sub('', inner))).strip()
+
+
+def _is_lone_math_para(inner: str) -> bool:
+    """孤公式段（display 公式块形态）：剥掉公式元素后只剩标点/数字/编号。
+
+    合并点在 promote_lone_display_math 之前，lone 公式可能仍是
+    display="inline"，故不认 display 属性、只认"无叙述字"形态
+    （口径同 _P_LONE_MATH_RE 的 pre/post 检查，但零容忍叙述字）。
+    公式形态全覆盖：MathML、mathmlify 失败退化的 <code class="latex">、
+    以及尚未转换的 $$…$$ 裸 LaTeX（防御模拟/测试直喂原文的场景）。
+    """
+    if '<math' not in inner and '$$' not in inner and 'class="latex"' not in inner:
+        return False
+    nomath = re.sub(r'<math\b.*?</math>', '', inner, flags=re.DOTALL)
+    nomath = re.sub(r'<code class="latex">.*?</code>', '', nomath, flags=re.DOTALL)
+    nomath = re.sub(r'\$\$.*?\$\$', '', nomath, flags=re.DOTALL)
+    return not _PUNCT_NUM_RE.sub('', _TAG_STRIP.sub('', nomath))
+
+
+def _is_lower_continuation(t2: str) -> bool:
+    """p2 是小写续行碎片：小写字母起首且不含连续大写（排除目录条目
+    'one 7 JANUARY 1976' 这类小写起首的标题行）"""
+    return bool(_LOWER_START.match(t2)) and not re.search(r'[A-Z]{2}', t2)
 
 
 def _looks_like_heading(text: str) -> bool:
     """是否为疑似标题行（不应合并）"""
     t = text.strip()
     return len(t) <= 25 and not t.endswith("。")
+
+
+def _should_merge(p1: str, p2: str) -> bool:
+    """相邻两段的合并判定（p1/p2 为段内 HTML，可含内联标记）。"""
+    t1, t2 = _visible_text(p1), _visible_text(p2)
+    if not t1 or not t2:
+        return False
+    # 护栏：p1 以脚注标记结尾（①②③...）→ 段落完整
+    if _FOOTNOTE_END.search(t1):
+        return False
+    # 护栏：p2 以编号开头（如 "2."、"一、"）且较短 → 可能是新条目
+    if re.match(r'^\d+[\.\、]', t2) and len(t2) <= 30:
+        return False
+    # 护栏：p1 疑似标题
+    if _looks_like_heading(t1):
+        return False
+    # 护栏：p2 疑似标题（短且无句末点）——小写续行碎片除外
+    if _looks_like_heading(t2) and not _is_lower_continuation(t2):
+        return False
+    # 公式例外：p2 是孤公式段 → p1 多为公式引导语/前置句，跨公式合并是错的
+    if _is_lone_math_para(p2):
+        return False
+    # 对称护栏：p1 是孤公式段 → 不吞并后续行文（"其中 x 为…"类说明句，
+    # 高等数学实测 637 处）
+    if _is_lone_math_para(p1):
+        return False
+    # 短段碎片闸：p1 极短（<10 可见字）且既无句末点也无延续标点收尾 →
+    # 多为标题/页码/图注碎片（"第一节 映射与函数"/"图1-23"/"xxiii" 实测命中）
+    if (len(t1) < 10 and not _SENTENCE_END.search(t1)
+            and not _CONT_END.search(t1)):
+        return False
+    # 信号：p1 非句末标点收尾（含无标点），或 p2 小写续行，或 p2 极短碎片
+    return (not _SENTENCE_END.search(t1)
+            or _is_lower_continuation(t2)
+            or len(t2) <= 30)
+
+
+def _join_inners(p1: str, p2: str) -> str:
+    """段内 HTML 拼接：英文断词去连字符、英-英补空格、其余直拼。
+
+    口径同 _dehyphen_join；连字符仅在裸文本末端时才剥除（末端是
+    内联标签时保留连字符直拼，不冒险改标记）。"""
+    t1, t2 = _visible_text(p1), _visible_text(p2)
+    p1r, p2l = p1.rstrip(), p2.lstrip()
+    if t1.endswith('-') and t2[:1].isascii() and t2[:1].isalpha():
+        if p1r.endswith('-'):
+            p1r = p1r[:-1]
+        return p1r + p2l
+    if (t1 and t1[-1].isascii() and t1[-1].isalnum()
+            and t2[:1].isascii() and t2[:1].isalnum()):
+        return p1r + ' ' + p2l
+    return p1r + p2l
+
+
+def _merge_broken_paragraphs(html: str) -> tuple:
+    """合并因跨页扫描而异常断裂的段落，返回 (html, 合并处数)。
+
+    扫描制：顺序遍历所有 <p>，相邻（间隔仅空白）且同为无 class 裸段
+    （caption/footnote 等带 class 段是硬边界，不参与也不被跨过）时按
+    _should_merge 信号判定，链长限 _MERGE_CHAIN_MAX。
+    """
+    out = []
+    pos = 0
+    acc = None        # 开放累积段的 inner HTML（None 表示无开放段）
+    chain = 0
+    n_merged = 0
+    for m in _P_TAG.finditer(html):
+        if acc is not None and html[pos:m.start()].strip():
+            # 中间隔了别的元素（标题/图片/表格）→ 断链
+            out.append(f"<p>{acc}</p>")
+            acc = None
+        if acc is None:
+            out.append(html[pos:m.start()])
+        pos = m.end()
+        attrs = (m.group(1) or "").strip()
+        inner = m.group(2)
+        if (acc is not None and not attrs and chain < _MERGE_CHAIN_MAX
+                and _should_merge(acc, inner)):
+            acc = _join_inners(acc, inner)
+            chain += 1
+            n_merged += 1
+            continue
+        if acc is not None:
+            out.append(f"<p>{acc}</p>")
+            acc = None
+        if attrs:
+            # 带 class 段（no_indent/footnote 等）原样保留，不作累积头
+            out.append(m.group(0))
+        else:
+            acc = inner
+            chain = 0
+    if acc is not None:
+        out.append(f"<p>{acc}</p>")
+    out.append(html[pos:])
+    return "".join(out), n_merged
+
+
+def _rule_merge_ok(p1: str, p2: str, page: int, open_page: int) -> bool:
+    """popo 块级规则回捞（contd 未标注时的兜底）：跨页用完整信号体系；
+    同页仅小写续行强信号——同页相邻块多为有意分段（版权页/目录行实测），
+    保守。"""
+    if page > open_page:
+        return _should_merge(p1, p2)
+    if page == open_page:
+        t1, t2 = _visible_text(p1), _visible_text(p2)
+        return (len(t1) >= 10
+                and not _SENTENCE_END.search(t1)
+                and _is_lower_continuation(t2)
+                and not _FOOTNOTE_END.search(t1)
+                and not _looks_like_heading(t1)
+                and not _is_lone_math_para(p1)
+                and not _is_lone_math_para(p2))
+    return False
 
 
 # ── CSS ─────────────────────────────────────────────────────────
@@ -657,7 +786,9 @@ def _render_chapter_html(
                 parts.append(rendered)
 
     result = "\n".join(parts)
-    result = _merge_broken_paragraphs(result)
+    result, n_merged = _merge_broken_paragraphs(result)
+    if n_merged:
+        logger.info(f"  断段合并: {n_merged} 处")
     return result
 
 
@@ -669,8 +800,13 @@ def _render_pages_html(
     noise_pages: set,
     chinese_punct: bool = False,
     translations: dict = None,
+    merge: bool = True,
 ) -> str:
-    """渲染指定页码范围的纯内容（无标题覆写，用于前页/后页/分隔页）"""
+    """渲染指定页码范围的纯内容（无标题覆写，用于前页/后页/分隔页）。
+
+    merge=False 用于后页（索引/习题答案/积分表等"无标点短行成排"体裁
+    是规则合并的误并重灾区，《必须保卫社会》索引与高等数学答案区实测
+    命中），前页/分隔页引言为前言散文，正常合并。"""
     html_parts = []
     for pn in range(page_start, page_end + 1):
         if pn in noise_pages:
@@ -689,7 +825,12 @@ def _render_pages_html(
                                              translations)
             if rendered:
                 html_parts.append(rendered)
-    return "\n".join(html_parts)
+    if not merge:
+        return "\n".join(html_parts)
+    result, n_merged = _merge_broken_paragraphs("\n".join(html_parts))
+    if n_merged:
+        logger.info(f"  断段合并(前后页): {n_merged} 处")
+    return result
 
 
 # ── Popo 引擎渲染 ─────────────────────────────────────────────
@@ -863,6 +1004,9 @@ def _render_popo_body(popo_blocks: list, content_list: list,
     units = []
     cur = None
     open_para = None
+    open_page = 0       # open_para 末段的页码（跨页/同页规则合并判定用）
+    open_chain = 0      # open_para 的规则合并链长（contd 标注合并不计）
+    rule_merged = [0]   # 规则回捞合并计数（日志用）
     toc_lookup = _build_toc_lookup(toc_entries)
     prev_unit_key = None  # 上一个编/章单元的归一化标题（查重）
     fn_counter = [0]      # 脚注序号（全书唯一 id）
@@ -936,10 +1080,12 @@ def _render_popo_body(popo_blocks: list, content_list: list,
         cur["fn_list"] = []
 
     def flush_para():
-        nonlocal open_para
+        nonlocal open_para, open_page, open_chain
         if open_para and cur is not None:
             cur["parts"].append(f"<p>{open_para}</p>")
         open_para = None
+        open_page = 0
+        open_chain = 0
 
     def ensure_unit():
         nonlocal cur
@@ -1050,12 +1196,25 @@ def _render_popo_body(popo_blocks: list, content_list: list,
         seg = _mathmlify(seg)
         if b.get("id") in contd_targets and open_para is not None:
             open_para = _dehyphen_join(open_para, seg)
+            open_page = b.get("page", open_page)
+        elif (open_para is not None and open_chain < _MERGE_CHAIN_MAX
+                and _rule_merge_ok(open_para, seg,
+                                   b.get("page", 0), open_page)):
+            # 规则回捞（病例 018）：LLM contd 未标注/丢失时的信号制兜底
+            open_para = _dehyphen_join(open_para, seg)
+            open_page = b.get("page", open_page)
+            open_chain += 1
+            rule_merged[0] += 1
         else:
             flush_para()
             open_para = seg
+            open_page = b.get("page", 0)
+            open_chain = 0
 
     flush_para()
     flush_footnotes()
+    if rule_merged[0]:
+        logger.info(f"  段落规则合并: {rule_merged[0]} 处（contd 标注之外回捞）")
     return units
 
 
@@ -1450,6 +1609,7 @@ def generate_epub(
             bm.get("page_start", 0),
             bm.get("page_end", 0),
             pages, images_dir, noise_pages, chinese_punct, translations,
+            merge=False,
         )
         if not bm_html.strip():
             continue

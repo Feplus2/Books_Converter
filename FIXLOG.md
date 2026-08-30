@@ -415,3 +415,62 @@
   stage3 12/12 绿；伪造条目回放走丢弃路径实测通过；Calculus Made Easy
   （Gutenberg #33283）60 页重转目录两级正确、477 MathML 居中。
 - **状态**：已修复并验证（源码路径；exe 重打与 SageRead 同步随下次发版进行）。
+
+## 病例 018｜必须保卫社会 / PaddleOCR — 跨页段落切断未合并
+
+- **现象**：EPUB 中一个段落被按页切成多个 `<p>`：上一页段落以文字或逗号结尾
+  （无句末标点），下一页开头小写字母接续句中。SageRead 书籍对照翻译侧实测
+  暴露：章首目录式短行五行本是一句，模型翻译时把碎片合并重分段导致译文错位
+  （SageRead 侧已另行加固批响应逐条校验，见 docs/book-translation-plan.md）。
+- **根因链**（2026-08-29 调研，未修）：Stage1 按页出块（段落边界=页内视觉块
+  边界）→ 跨页合并唯一判定源是 stage2_hybrid LLM 标注 `contd`
+  （_SYS_CONTD 无"下段小写起首"线索、解析失败静默丢）→ `filter_contd`
+  （popo/inference.py:239-240）遇 title/equation 块 break，页眉挡住候选对
+  → stage3_epub.py:1051 合并要求 open_para 仍开着，页首 title/image/table/
+  孤儿 caption 均会重置 open_para，contd 标对了也静默不并 → 正则兜底
+  `_merge_broken_paragraphs`（stage3_epub.py:233-259）只挂在旧引擎
+  `_render_chapter_html` 路径，生产 popo/hybrid 路径完全不经过。
+- **修补点**（方案已定，择期实施）：
+  1. 首选：把 Papers_Converter 的规则合并（content_processor.py
+     `_merge_paragraph_fragments`：前块无终止标点 + 后块小写/开括号起首或
+     前块逗号/虚词结尾 → 并；跨页与隔图表情景齐备）移植为 popo 路径兜底，
+     挂在 stage3_epub.py `_render_popo_body` contd 分支之后规则回捞；
+  2. `filter_contd` 不在页首 title 块处 break（至少跨过运行头）；
+     `_SYS_CONTD` 补小写续接线索；
+  3. qc_book.py 加段落级检查（页末无终止标点+次页首小写未合并对计数）。
+- **回归**：待实施时补——规则合并单测（对照 Papers 侧信号集）+ 本书
+  chapter_001 章首五行合为一段的回放用例。
+- **实施记录**（2026-08-30，修补点 1 落地；2/3 未做，仍挂账）：
+  - `_BROKEN_P`/`_merge_if_broken` 废弃，`_merge_broken_paragraphs` 重写为
+    扫描制（`_P_TAG` 段内允许任意内联标记——旧 `[^<]` 形态下含行内公式/
+    sup/em 的段完全不参与合并，高数产物 10252 个 `<math>` 段全被跳过）；
+    带 class 的段（no_indent 图注/footnote）是硬边界，不参与也不被跨过。
+  - 判定重构为信号制 `_should_merge`：合并 =（p1 非句末标点收尾 OR p2
+    小写续行 OR p2 极短碎片）AND NOT 公式例外（p1/p2 任一为零叙述字
+    孤公式段——高数实测 p2 孤公式 1953 处、p1 孤公式 637 处，不加闸
+    即大规模跨公式误并）AND NOT 既有三护栏（脚注尾/编号短段/疑似标题，
+    疑似标题双向）AND NOT 短段碎片闸（p1 <10 可见字且无标点收尾）。
+    `_SENTENCE_END` 补 ASCII `.` 与全角 `：；`（旧漏 `.` 致英文句号收尾
+    段落被判"未完结"，模拟实测 40 处误并）。
+  - popo 生产路径兜底：`_render_popo_body` contd 分支后挂 `_rule_merge_ok`
+    ——跨页用完整信号体系；同页仅小写续行强信号（同页相邻块多为有意分段，
+    版权页/目录行/页脚注释行实测）；链长上限 `_MERGE_CHAIN_MAX=6`。
+  - 拼接 `_join_inners` 口径同 `_dehyphen_join`：断词去连字符、英-英补
+    空格、中文直拼；前页/分隔页引言（前言散文）经 `_render_pages_html`
+    合并，后页传 `merge=False`（索引/习题答案/积分表"无标点短行成排"是
+    误并重灾区——必须保卫社会索引 291 段被并掉 136、高数答案区条目互粘，
+    实测后切除）。
+- **回归**：tests/test_stage3_merge.py 新增 25 例（合并/拼接/公式例外/
+  护栏/链闸），全套 25/25 + promote 12/12 + toc 41/41 绿。
+  真前基线对拍（同源码 stash 来回）：必须保卫社会 `<p>` 1330→1063
+  （-267=正文 256+前页 11），高数 8006→7977（-29=正文 26+前页 3），
+  两书 block math 3180→3180/0→0 不变、后页与索引零改动。
+  合并点随机抽 20 人工读：18 完全正确，2 处判定正确但拼接残留 OCR
+  无连字符断词空格（"knowledge edge"/"app paratus"，PaddleOCR 丢连字符，
+  判定层无法还原）。未并的"无标点收尾"点抽 10 全属例外（孤公式 4、
+  同页页脚注释行 4、图注/编号 2）。
+- **已知残留**：① 无连字符断词（OCR 丢 `-`）合并后留空格；② 同页中文
+  碎行不并（无小写信号，保守）；③ 诗歌/信件等无标点成排体裁若 p1 ≥10
+  字且非标题形状仍可能误并（链长 6 兜底）；④ 修补点 2（filter_contd
+  跨页首 title）与 3（qc 段落级检查）未做。
+- **状态**：已修复并验证（2026-08-30；与 SageRead 翻译侧各自独立生效）。
