@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 # DeepSeek 轻量兜底采样参数
 _FRONT_PAGES = 15   # 书首采样页数
 _BACK_PAGES = 5     # 书尾采样页数
-_PAGE_CHARS = 800   # 每页最多采样字符
+_PAGE_CHARS = 4000  # 每页最多采样字符（目录页常超 1000 字：病例 Feeling Great
+                    # 两页目录 1263/953 字符被 800 截断 → 11-19 章条目丢失）
 
 _LIGHT_PROMPT = """你是一位图书结构分析师。以下是一本书【开头 {front} 页】和【结尾 {back} 页】的文本采样，页码用 [P{{N}}] 标记（N 为扫描页码，从 1 开始）。
 
@@ -343,10 +344,21 @@ _SHAPE_PATTERNS = [
     ("num_cn", re.compile(r"^[一二三四五六七八九十]+、")),
     ("num_cn_paren", re.compile(r"^[（(]?[一二三四五六七八九十]+[）)]")),
     ("num_dot", re.compile(r"^\d+\.\s*\S")),
+    # 竖线变体：'12 | All-or-Nothing Thinking'（Feeling Great 章首版式；
+    # 无此形状时按 plain 被无锚下沉机制误压——ch12 因此沉出 nav）
+    ("num_bar", re.compile(r"^\d+\s*[|｜]\s*\S")),
     ("num_paren", re.compile(r"^[（(]?\d+[）)]")),
     ("roman", re.compile(r"^[IVXLCDM]+[.、]\s")),
     ("alpha", re.compile(r"^[a-zA-Z][.、]\s")),
 ]
+
+# 'Problem 3.1.'/'Exercise 2'/'例 3' 类编号前缀（用于归一化键：已
+# casefold、无空白）。印刷目录常省略该编号前缀，剥掉后块与条目对齐
+# （病例 024：QFT 习题章 11 条节标题锚不上）。词表严格限定+必须带数字。
+_PROBLEM_PREFIX_RE = re.compile(
+    r"^(?:problem|exercise|example|aufgabe|probl[eè]me|exercice"
+    r"|习题|例题|问题|练习|思考)\d+(?:[.、．]\d+)*[.、．]?"
+)
 
 
 def _title_shape(text: str) -> str:
@@ -410,8 +422,13 @@ def _sanitize_pdf_toc(pdf_toc: list) -> list:
     out = []
     for e in pdf_toc:
         text = _JUNK_BOOKMARK_RE.sub("", (e.get("text") or "").strip()).strip()
-        if text:
-            out.append({**e, "text": text})
+        if not text:
+            continue
+        # 纯数字长串条目（ISBN '9781107017108' 之类）无结构信息，拒收——
+        # 否则会经页码救援在封面页合成幻影标题（病例 022）
+        if re.fullmatch(r"\d{6,}", text):
+            continue
+        out.append({**e, "text": text})
     return out
 
 
@@ -422,6 +439,14 @@ def _build_anchors(toc_entries: list) -> list:
     **同时保留完整形态**：标题本身以数字结尾时（"one 7 JANUARY 1976"），
     剥尾会把年份吃掉，导致正文标题永远锚不上。完整形态在前，精确命中优先取它。
     """
+    def _weak_key(k: str) -> bool:
+        # 退化键拒收：有效字符（词字符/CJK）不足 3 且无 CJK（'VI.'→'vi.'
+        # 这类截断残渣）。短键是模糊匹配误收短垃圾块的总开关
+        # （病例 Feeling Great：'total'/'1._____' 等 4-7 字符块全部命中
+        # 'vi.' 被锁 L1）
+        core = re.sub(r"[^\w一-鿿]", "", k)
+        return len(core) < 3 and not any('一' <= c <= '鿿' for c in core)
+
     anchors = []
     for e in toc_entries or []:
         raw = (e.get("text") or "").strip()
@@ -430,6 +455,8 @@ def _build_anchors(toc_entries: list) -> list:
         display = _strip_trailing_page(raw)
         full_key = _normalize_title(raw)
         key = _normalize_title(display)
+        if _weak_key(full_key):
+            continue
         try:
             level = int(e.get("level", 0))
         except (TypeError, ValueError):
@@ -443,7 +470,7 @@ def _build_anchors(toc_entries: list) -> list:
             continue
         if full_key:
             anchors.append((full_key, level, raw, page))
-        if key and key != full_key:
+        if key and key != full_key and not _weak_key(key):
             anchors.append((key, level, display, page))
 
     # 两级目录且高层级只有个别无编号条目（LLM 常把 Foreword/Introduction
@@ -473,14 +500,22 @@ def _match_anchor(text: str, anchors: list):
     key = _normalize_title(text)
     if not key:
         return None
+    # 编号前缀剥离键（'Problem 3.1. The fine…' → 'thefine…'）：印刷目录
+    # 常省略 Problem/Exercise/Example 编号，条目与正文标题差一个前缀
+    # （病例 QFT：习题章的 11 条节标题因此锚不上）。严格限定词表+必须
+    # 带数字编号，防过匹配；只补精确命中，不进模糊兜底。
+    alt_key = _PROBLEM_PREFIX_RE.sub("", key)
     prefix_best = None
     suffix_best = None
     long_prefix_best = None
     for a in anchors:
         k, lv = a[0], a[1]
-        if k == key:
+        if k == key or (alt_key != key and k == alt_key):
             return a
-        if k.startswith(key) and len(k) > len(key):
+        # 前缀匹配需最低长度：单字母 'A' 会前缀命中 'Acknowledgments'
+        # （病例 Feeling Great 索引字母字头锚定成 L1）；2 字以上 CJK 前缀仍允许
+        if k.startswith(key) and len(k) > len(key) \
+                and (len(key) >= 3 or any('一' <= c <= '鿿' for c in key)):
             # 块是锚点的前缀（"第一章" → "第一章 民法概念论"），取最长
             if prefix_best is None or len(k) > len(prefix_best[0]):
                 prefix_best = (k, a)
@@ -501,11 +536,16 @@ def _match_anchor(text: str, anchors: list):
     if long_prefix_best is not None:
         return long_prefix_best[1]
     # 块是锚点的子串（副标题被 OCR 截断，如"…——当代新"缺尾字）；
-    # 限长块防"权利主体"式短块错配，取最短包含锚点（最具体）
+    # 限长块防"权利主体"式短块错配，取最短包含锚点（最具体）。
+    # 覆盖率闸门：块须覆盖锚点 ≥40%——单个英文词也能混过 8 字符下限
+    # （病例 Feeling Great：quiz 表头 'Depression' 10 字符子串命中 41 字符的
+    # 分区条目 'I. How to Turn Depression and Anxiety into Joy' → 幻影 L1）
     if len(key) >= 8:
         sub_best = None
         for a in anchors:
             k = a[0]
+            if len(key) < max(8, 0.4 * len(k)):
+                continue
             if key in k and len(k) > len(key):
                 if sub_best is None or len(k) < len(sub_best[0]):
                     sub_best = (k, a)
@@ -513,8 +553,8 @@ def _match_anchor(text: str, anchors: list):
             return sub_best[1]
     # 模糊兜底：目录页与正文的 OCR 结果常有单字差异（僵/催、是/和、缺字）
     if len(key) >= 4:
-        best_dist = 3
         best = None
+        best_dist = None
         ambiguous = False
         for a in anchors:
             k = a[0]
@@ -529,7 +569,12 @@ def _match_anchor(text: str, anchors: list):
             # 如 'PRÉSPACE' vs 'PRÉFACE'，块长 7 但条目长 8 需容 2）
             limit = 1 if max(len(key), len(k)) < 8 else 2
             d = _edit_distance_le(key, k, limit)
-            if d < best_dist:
+            # 超限时 _edit_distance_le 返回 limit+1，必须拒绝——
+            # 病例 Feeling Great：旧版 best_dist 起始 3，短锚点超限返回 2
+            # 仍被接受，'total'/'1._____' 等短垃圾块全部命中退化锚 'vi.'
+            if d > limit:
+                continue
+            if best_dist is None or d < best_dist:
                 best_dist, best, ambiguous = d, a, False
             elif d == best_dist and a is not best:
                 ambiguous = True
@@ -582,23 +627,49 @@ def _calibrate_levels(blocks: list, toc_entries: list,
 
     # ── 锚点驱动的标题救援 ──
     # 编/章分隔页常被模型漏判（大字孤立、无上下文）；
-    # 与目录条目精确匹配的短文本块，按目录定义强制晋升为标题。
+    # 与目录条目匹配的短文本块，按目录定义强制晋升为标题。
     # 长度上限 64：含公式的节标题会超过 40（数学书 '一、f(x)=e^{λx}P_m(x)型'）
+    #
+    # 位置闸门（病例 Feeling Great：'CliffsNotes 精华版'章内含全书章节摘要
+    # 表，表内章节名逐条命中锚点被晋升 → 目录乱序/重复章）：先用已锚定
+    # 标题估计 印刷页→扫描页 偏移；纯文本块须落在预测位置 ±8 页内。
+    # 闸门只挡"毫无标题视觉证据的纯文本块"——引擎已标标题的块不套用：
+    # 前置页罗马页码（Acknowledgments ix）、附录另起页码（刘擎'补充讲解'
+    # 印刷 289 → 扫描 371）等 regime 下全局偏移本就不成立。
+    from statistics import median as _median
+    offsets = [
+        b["page"] - a[3]
+        for b in blocks
+        if b.get("type") == "title" and b.get("level", -1) > 0 and b.get("page")
+        for a in [_match_anchor((b.get("content") or "").strip(), anchors)]
+        if a is not None and a[3] is not None
+    ]
+    page_offset = round(_median(offsets)) if len(offsets) >= 3 else None
+
     rescued = 0
     for b in blocks:
         if b.get("type") == "title" and b.get("level", -1) > 0:
             continue
+        if b.get("type") in ("header", "footer", "page_number",
+                             "aside_text", "discarded"):
+            continue          # 噪声类型永不晋升——运行头 suffix 命中锚点
+                              # 顶替真章题的病例（QFT ch4）
         if b.get("page") in toc_pages:
             continue
         text = (b.get("content") or "").strip()
         key = _normalize_title(text)
         if not key or len(key) > 64:
             continue
-        lv = match_anchor(text)
-        if lv is not None:
-            b["type"] = "title"
-            b["level"] = lv
-            rescued += 1
+        m = _match_anchor(text, anchors)
+        if m is None:
+            continue
+        if b.get("type") != "title" and page_offset is not None \
+                and m[3] is not None and b.get("page"):
+            if abs(b["page"] - (m[3] + page_offset)) > 8:
+                continue
+        b["type"] = "title"
+        b["level"] = m[1]
+        rescued += 1
     if rescued:
         logger.info(f"  标题救援: {rescued} 个漏判标题由目录锚点晋升")
 
@@ -1204,6 +1275,131 @@ def _height_ladder_map(titled: list) -> dict:
     return out
 
 
+def _dedup_anchored_titles(blocks: list, toc_entries: list) -> int:
+    """锚点身份查重：命中同一目录条目的多个标题块只留一个，其余降回正文
+    （type=text, level=-1）。
+
+    跨页重复的典型：章题页与章首页重复印刷标题、运行头 OCR 变体
+    （'4 Karen's Story' / '4. Karen's Story'）。显示层文本查重会被译文
+    措辞差异击败（'梅兰妮'/'梅琳达'），锚点身份与译文无关。
+
+    留谁——目录序三明治一致性（不依赖印刷页码，免疫附录/罗马页码
+    regime）：以"唯一命中的锚点块"为可信骨架，候选块的阅读位置若
+    落在骨架相邻锚点的目录序区间外即幻影（病例 Feeling Great：引用框
+    全文引用 '26. Let's Be Specific…' 夹在 13/14 章锚点之间；'Depression'
+    单词块锚到分区 I 却位于第 3 章之后）。一致者优先，平级留阅读顺序
+    首个（章题页在章首重复页之前）。
+    失败方向安全：内容降格为段落保留，stage3 另有相邻近似章合并兜底。
+    """
+    anchors = _build_anchors(toc_entries)
+    if not anchors:
+        return 0
+    order = {}
+    for i, a in enumerate(anchors):
+        order.setdefault(a[0], i)
+
+    groups: dict = {}
+    for b in blocks:
+        if b.get("type") != "title" or b.get("level", -1) <= 0:
+            continue
+        text = (b.get("content") or "").strip()
+        if not text:
+            continue
+        m = _match_anchor(text, anchors)
+        if m:
+            groups.setdefault(m[0], []).append(b)
+
+    # 可信骨架：唯一命中的锚点块（无竞争的锚定），按扫描页排序
+    skeleton = sorted(
+        (bs[0].get("page") or 0, order[key])
+        for key, bs in groups.items() if len(bs) == 1 and bs[0].get("page")
+    )
+
+    n = 0
+    for key, bs in groups.items():
+        if len(bs) < 2:
+            continue
+        my = order[key]
+        keep = None
+        for b in bs:
+            pg = b.get("page") or 0
+            prev_idx = max((oi for sp, oi in skeleton if sp < pg),
+                           default=None)
+            next_idx = min((oi for sp, oi in skeleton if sp > pg),
+                           default=None)
+            if (prev_idx is None or prev_idx <= my) and \
+                    (next_idx is None or my <= next_idx):
+                keep = b          # 阅读顺序上首个位置一致者
+                break
+        if keep is None:
+            keep = bs[0]          # 骨架太稀无从判定 → 留首个
+        for b in bs:
+            if b is not keep:
+                b["type"] = "text"
+                b["level"] = -1
+                b.pop("_anchored", None)
+                n += 1
+    if n:
+        logger.info(f"  锚点查重: {n} 个同条目重复标题块降回正文"
+                    f"（目录序一致性择优）")
+    return n
+
+
+# 无锚纯文字标题的垃圾形态（索引字母字头/孤字残片/署名行/单个英文词）。
+# 这些形态若真是章/节标题，目录里一定有它（能锚上）；
+# 锚不上 = 量表表头/页眉残片/落款，绝不可能是标题 —— 直接降回正文。
+_JUNK_SINGLE_LETTER_RE = re.compile(r"^[A-Za-z]$")
+_JUNK_SINGLE_CJK_RE = re.compile(r"^[一-鿿]$")
+_JUNK_BYLINE_RE = re.compile(r"(?:^by\s+\S|[（(].*(?:著|译|主编)[)）]$|(?:著|编著|译注|主编|绘)$)",
+                             re.I)
+_JUNK_SINGLE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z'’-]*$")
+
+
+def _veto_junk_titles(blocks: list, toc_entries: list) -> int:
+    """无锚垃圾标题否决器：未锚定、无编号形状、且命中垃圾形态的标题块
+    降回正文。只降格不晋升（失败方向=真实小节标题变正文段落，内容不丢）。
+    病例 Feeling Great：'A'/'I'/'V'（索引字母字头）与 '马克·诺布尔博士 著'
+    （署名行）成 L1/L2 标题上目录。
+
+    单词 veto 的复发豁免：'Summary'/'Exercises' 这类章末固定小节在教科书里
+    每章复发（病例 Condensed Matter 实测 14+ 次），复发 ≥3 的相同短标题几乎
+    必是真小节，豁免；一次性浮头（FG 的 'Depression' 量表表头）才降格。
+    """
+    anchors = _build_anchors(toc_entries)
+    # 无锚 plain 标题块的归一化文本复发计数（豁免判据）
+    freq = Counter(
+        _normalize_title((b.get("content") or "").strip())
+        for b in blocks
+        if b.get("type") == "title" and b.get("level", -1) > 0
+        and not b.get("_anchored")
+        and _title_shape((b.get("content") or "").strip()) == "plain"
+    )
+    n = 0
+    for b in blocks:
+        if b.get("type") != "title" or b.get("level", -1) <= 0:
+            continue
+        if b.get("_anchored"):
+            continue              # 锚得上 = 目录认可的强证据，豁免
+        text = (b.get("content") or "").strip()
+        if _title_shape(text) != "plain":
+            continue              # 带编号形状的有形状栈管，不归这里
+        if anchors and _match_anchor(text, anchors):
+            continue              # 锚得上但未被锚定（如被查重降格前）= 不动
+        if _JUNK_SINGLE_LETTER_RE.match(text) or _JUNK_SINGLE_CJK_RE.match(text) \
+                or _JUNK_BYLINE_RE.search(text):
+            b["type"] = "text"
+            b["level"] = -1
+            n += 1
+        elif _JUNK_SINGLE_TOKEN_RE.match(text) \
+                and freq[_normalize_title(text)] < 3:
+            b["type"] = "text"
+            b["level"] = -1
+            n += 1
+    if n:
+        logger.info(f"  垃圾标题否决: {n} 个无锚短标题块降回正文")
+    return n
+
+
 def _sink_unanchored_plain(blocks: list) -> int:
     """无编号无锚标题下沉约束（在页码救援之后调用）。
 
@@ -1239,6 +1435,134 @@ def _sink_unanchored_plain(blocks: list) -> int:
     if n_geo:
         logger.info(f"  字号阶梯: {n_geo} 个小字标题按字高档位再下沉")
     return n_sink
+
+
+# 泛名书签条目：'Chapter 1'/'Part II'/'Unit 3'/'第3章' 这类只有类别+序号、
+# 无真实标题文字的 outline 条目（病例 022：文本锚定对它们全灭）
+_GENERIC_OUTLINE_RE = re.compile(
+    r"^(?:part|chapter|unit|module|section|volume|book|cap[íi]tulo|kapitel"
+    r"|chapitre|第\s*[\dIVXLC一二三四五六七八九十]+\s*[章编篇卷部]?)"
+    r"\s*[\dIVXLC]+\s*\.?$",
+    re.I,
+)
+
+
+def _normalize_generic_outline_levels(toc_entries: list) -> list:
+    """全平 outline（Part/Chapter 同层）且含泛名条目时，按标签类别重建
+    层级：Part 类 → L1，Chapter 类 → L2（病例 022：CM 的 31 条书签 level
+    全为 1，_spine_from_toc 读到平层 → spine 退化为 1，章/节全被压平）。
+    Part 包含 Chapter 是普世约定；非全平或无 Part 类条目时原样返回。
+    """
+    def _lvl(e) -> int:
+        try:
+            return int(e.get("level", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    generic = [e for e in (toc_entries or [])
+               if _GENERIC_OUTLINE_RE.match((e.get("text") or "").strip())]
+    if len(generic) < 2:
+        return toc_entries
+    has_part = any(_title_shape((e.get("text") or "").strip())
+                   in ("part_cn", "part_en") for e in generic)
+    flat = len({_lvl(e) for e in toc_entries if _lvl(e) > 0}) <= 1
+    if not (flat and has_part):
+        return toc_entries
+    out = []
+    for e in toc_entries:
+        text = (e.get("text") or "").strip()
+        if _GENERIC_OUTLINE_RE.match(text):
+            part_like = _title_shape(text) in ("part_cn", "part_en")
+            out.append({**e, "level": 1 if part_like else 2})
+        else:
+            out.append(e)
+    logger.info("  泛名书签层级重建: Part→L1, Chapter→L2（outline 全平）")
+    return out
+
+
+def _anchor_generic_outline(blocks: list, toc_entries: list) -> int:
+    """泛名 PDF 书签条目的位置锚定（病例 022）。
+
+    born-digital PDF 的书签目标页是扫描页真值（与印刷页无偏移问题），
+    当条目是 'Chapter N' 泛名、文本锚定全灭时，把该页阅读顺序上首个
+    未锚定的标题块锁到条目层级——书签页码即章首页，页顶块即章标题。
+
+    层级推断：outline 全平（level 全同）时按标签类别重建——Part 类
+    （part/编）→ L1，Chapter 类 → L2（存在 Part 类条目时）；否则沿用
+    outline 原层级。非泛名条目、已锚定块、目录页降格区一律不动。
+    """
+    def _lvl(e) -> int:
+        try:
+            return int(e.get("level", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    generic = [e for e in (toc_entries or [])
+               if _GENERIC_OUTLINE_RE.match((e.get("text") or "").strip())]
+    if len(generic) < 2:
+        return 0
+    has_part = any(_title_shape((e.get("text") or "").strip())
+                   in ("part_cn", "part_en") for e in generic)
+    flat = len({_lvl(e) for e in toc_entries if _lvl(e) > 0}) <= 1
+
+    n = 0
+    for e in generic:
+        text = (e.get("text") or "").strip()
+        part_like = _title_shape(text) in ("part_cn", "part_en")
+        if flat:
+            level = 1 if part_like else (2 if has_part else (_lvl(e) or 1))
+        else:
+            level = _lvl(e)
+        try:
+            page = int(e.get("page"))
+        except (TypeError, ValueError):
+            continue
+        # 章号（'Chapter 12' → '12.'），用于拒绝本章小节块（'12.1 …' 是节）
+        mnum = re.search(r"\d+", text)
+        chap_num = (mnum.group(0) + ".") if mnum else None
+
+        # 候选块：书签页上的 title/header/text 块——章题常被 PaddleOCR 标成
+        # header（页顶大字与页眉同位，病例 CM ch2 'Amorphous structure'），
+        # 或投票缺失 level=0（病例 CM ch12 'Electrons…'）——未锚定、类标题
+        # 长度、非垃圾形态、非本章小节
+        cands = []
+        for b in blocks:
+            if b.get("page") != page or b.get("_anchored"):
+                continue
+            if b.get("type") not in ("title", "header", "text"):
+                continue
+            t = (b.get("content") or "").strip()
+            k = _normalize_title(t)
+            if not k or not 3 <= len(k) <= 64:
+                continue
+            if _JUNK_SINGLE_LETTER_RE.match(t) or _JUNK_SINGLE_CJK_RE.match(t) \
+                    or _JUNK_BYLINE_RE.search(t):
+                continue
+            if chap_num and t.replace(" ", "").startswith(chap_num):
+                continue
+            cands.append(b)
+        if not cands:
+            continue
+        # 页顶优先：章题在章首页顶部（章扉页不挂前章运行头）；
+        # bbox 缺失的块沉底（并列时 min 取阅读顺序首个）
+        def _top(b):
+            bb = b.get("bbox")
+            return bb[1] if bb else 9.0
+        best = min(cands, key=_top)
+        if best.get("type") == "text" and best.get("bbox") \
+                and _top(best) > 0.45:
+            continue  # 纯文本晋升要求页顶区（≤45% 页高），深位文本块宁可不锁
+        best["type"] = "title"
+        best["_anchored"] = True
+        best["_pos_anchor"] = _normalize_title(text)
+        if mnum:
+            best["_pos_num"] = mnum.group(0)   # 供 stage3 补裸章题的章号
+        best["level"] = level
+        n += 1
+    if n:
+        logger.info(f"  泛名书签位置锚定: {n} 个 'Chapter N' 式条目"
+                    f"按书签页锁定标题块")
+    return n
 
 
 def _rescue_by_page(blocks: list, toc_entries: list) -> int:
@@ -1602,6 +1926,7 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     if pdf_toc:
         pdf_toc = _sanitize_pdf_toc(pdf_toc)
     if pdf_toc:
+        pdf_toc = _normalize_generic_outline_levels(pdf_toc)
         logger.info(f"  PDF outline 先验: {len(pdf_toc)} 条书签目录"
                     f"（取代 LLM toc_entries）")
         light["toc_entries"] = pdf_toc
@@ -1612,6 +1937,12 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     # 目录页识别补集：blob 合并块/简目等无独立数字块的形态按条目行命中识别
     toc_pages |= _detect_toc_pages_by_entries(
         light.get("toc_entries", []), content_list)
+    # 章首 mini-TOC 误伤防护：目录页降格只作用于书首全局目录页（≤25 页）。
+    # 章首 mini-TOC 与全局目录共享条目形态（≥3 条目行+页码数字块），
+    # 会被识别器一并标为目录页，真章题随降格消失、运行头被救援顶替
+    # （病例 QFT ch4：p98 被标为目录页 → 真章题变正文，
+    # 下一页运行头晋升顶替——"电影播了十分钟才标开头"）
+    toc_pages = {p for p in toc_pages if p <= 25}
 
     # ── 伪造目录硬兜底 ──
     # 书里没有目录页时，LLM 不会返回空 toc_entries，而是拿附带的"全书标题
@@ -1645,8 +1976,16 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     _calibrate_levels(blocks, light.get("toc_entries", []),
                       toc_pages={p + 1 for p in toc_pages})
 
+    # ── 泛名书签位置锚定（'Chapter N' 式 outline 条目，文本锚定全灭时
+    # 按书签页锁定标题块；非 born-digital/无泛名条目时为空操作） ──
+    _anchor_generic_outline(blocks, light.get("toc_entries", []))
+
     # ── 页码救援/回补未锚上的目录条目（章扉页被 OCR 整块漏识别等） ──
     _rescue_by_page(blocks, light.get("toc_entries", []))
+
+    # ── 锚点身份查重 + 无锚垃圾标题否决（救援后、下沉前） ──
+    _dedup_anchored_titles(blocks, light.get("toc_entries", []))
+    _veto_junk_titles(blocks, light.get("toc_entries", []))
 
     # ── 无编号无锚标题下沉（救援完成后执行：系列块如'答学友问2..12'
     # 依赖救援先锚定系列首项'答学友问1'，否则会错误沉到上一章内） ──
@@ -1674,6 +2013,9 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
         "noise_ranges": [],
         "tree": tree,
         "toc_entries": light.get("toc_entries", []),
+        # outline 来源标记：stage3 的泛名条目正文起点回收只信书签页码
+        # （扫描页真值）；LLM 从印刷目录提取的条目是印刷页，不可用于回收
+        "toc_source": "outline" if pdf_toc else None,
         "popo_blocks_file": blocks_path.name,
     }
 

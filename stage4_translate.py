@@ -120,12 +120,22 @@ def _translate_batch(client: OpenAI, model: str, sys_prompt: str,
             result = json.loads(_clean_json_response(raw))
             translations = result.get("translations", {})
             terms = result.get("terms", {})
+            # 批响应逐条校验（病例 Feeling Great：模型合并/跳号时按序号映射
+            # 整批错位——'11 | The Great Escape' 章题被配上 '2. ___'，并随
+            # 断点续翻缓存复用扩散）。只接受 1..N 全覆盖且非空的响应；缺号
+            # 即抛错走重试/拆半——失败方向=保留原文，绝不产出可疑映射。
+            if not isinstance(translations, dict):
+                raise ValueError("批响应 translations 非字典")
+            missing = [n for n in range(1, len(batch) + 1)
+                       if not str(translations.get(str(n), "")).strip()]
+            if missing:
+                raise ValueError(
+                    f"批响应缺 {len(missing)}/{len(batch)} 条"
+                    f"（合并/跳号错位风险，拒收）")
             # 序号 → key
             out = {}
             for n, (key, _text) in enumerate(batch, 1):
-                zh = translations.get(str(n))
-                if isinstance(zh, str) and zh.strip():
-                    out[key] = zh.strip()
+                out[key] = translations[str(n)].strip()
             return out, terms if isinstance(terms, dict) else {}
         except Exception as e:
             last_err = e

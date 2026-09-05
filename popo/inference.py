@@ -448,7 +448,10 @@ def extract_label2(s):
             id_part, level_part = line.split("<|level|>")
             idx = id_part.split("<|id|>")[1]
             level = level_part
-            if int(level) >= 0:
+            # level 合同为 >=1。0 是模型越约输出（病例 Feeling Great 第 18 章
+            # 被判 0 → "是标题但所有 level>0 过滤都看不见"的僵尸块，整章并入
+            # 上一章）。拒收 0：块保持推理前状态，交由锚点救援兜底。
+            if int(level) >= 1:
                 result.append({"id": int(idx), "level": int(level)})
         except Exception:
             continue

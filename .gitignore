@@ -28,6 +28,12 @@ test_book.pdf
 # 批量跑书日志
 _batch_logs/
 
+# 回归暂存（测试 PDF 副本 + 引擎缓存 + 产物，体积大且属个人书库内容）
+_regress/
+
+# 临时验证目录
+.tmp-*/
+
 # 系统垃圾
 .DS_Store
 Thumbs.db

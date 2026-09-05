@@ -42,13 +42,19 @@ _FOOTNOTE_LIST_SPLIT = re.compile(
 # 顶层标题是"编/篇/卷/部"类大分区的用词特征（中/英/德/法）
 _PARTITION_HINT = re.compile(
     r'^(第\s*[一二三四五六七八九十百零〇0-9]+\s*[编篇卷部]'
-    r'|part\b|volume\b|book\s+[ivx0-9]|teil\b|partie\b|tome\b)',
+    r'|part\b|volume\b|book\s+[ivx0-9]|teil\b|partie\b|tome\b'
+    # 罗马数字/编号分区：'I. How to…'、'Section IV'（Feeling Great 病例：
+    # 纯词形失配导致 spine 回退启发式 = 最小层级 1，垃圾 L1 全部升格为章）
+    r'|section\s+[ivx0-9]+\b|[IVXLC]{1,5}[.、．)]\s*\S)',
     re.I,
 )
-# "章"级标题的用词特征
+# "章"级标题的用词特征（含英文纯数字编号 '12. …' 式目录条目；
+# 分隔符后排除紧跟数字——'1.1'/'5.5.1' 是多级小节编号不是章，
+# 病例 QFT：'1.1 Overview' 误判为章把 spine 拉到 2，5/5.1/5.2 全被压平）
 _CHAPTER_HINT = re.compile(
     r'^(第\s*[一二三四五六七八九十百零〇0-9]+\s*章'
-    r'|chapter\b|kapitel\b|chapitre\b)',
+    r'|chapter\b|kapitel\b|chapitre\b'
+    r'|\d{1,3}[.、．)](?!\d)\s*\S)',
     re.I,
 )
 
@@ -836,13 +842,30 @@ def _render_pages_html(
 # ── Popo 引擎渲染 ─────────────────────────────────────────────
 
 def _body_range(structure: dict, total_pages: int) -> tuple:
-    """正文页码范围：front_matter 之后 ~ back_matter 之前"""
+    """正文页码范围：front_matter 之后 ~ back_matter 之前
+
+    泛名 outline 条目（'Part I'/'Chapter 1'）的页码是确定性结构真值：
+    LLM 前页分类波动把分区扉页误划入 front_matter 时（病例 022 二轮
+    CM 实测 body_start 24 吞掉 p22 的 PART I 分区），按泛名条目的最小
+    页码回收正文起点。"""
     start = 1
     for fm in structure.get("front_matter", []):
         try:
             start = max(start, int(fm.get("page_end", 0)) + 1)
         except (TypeError, ValueError):
             pass
+    try:
+        from stage2_common import _GENERIC_OUTLINE_RE
+        outline_pages = [
+            int(e["page"]) for e in structure.get("toc_entries", [])
+            if structure.get("toc_source") == "outline"
+            and _GENERIC_OUTLINE_RE.match((e.get("text") or "").strip())
+            and str(e.get("page") or "").isdigit()
+        ]
+        if outline_pages:
+            start = min(start, min(outline_pages))
+    except Exception:
+        pass
     end = total_pages
     for bm in structure.get("back_matter", []):
         try:
@@ -1013,7 +1036,12 @@ def _render_popo_body(popo_blocks: list, content_list: list,
     last_page = 0         # 当前遍历到的页码（未锚定脚注的清扫水位）
 
     def _similar(a, b):
-        """相邻单元标题判重：互为包含视为同一编/章（如 '权利变动' vs '第四编权利变动'）"""
+        """相邻单元标题判重：去标点/大小写后互为包含视为同一编/章
+        （'4 Karen's Story' vs '4. Karen's Story' 仅标点之差——
+        病例 Feeling Great 跨页近似重复双双进 nav）"""
+        def _k(s):
+            return re.sub(r"[^\w一-鿿]", "", s or "").casefold()
+        a, b = _k(a), _k(b)
         return a and b and (a in b or b in a)
 
     def claim_footnotes(seg: str, page: int) -> str:
@@ -1106,6 +1134,11 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             flush_footnotes()
             zh = _translation_of(b, translations)
             display = zh if zh else _enrich_title(text, toc_lookup)
+            # 泛名书签位置锚定的裸章题补章号显示（'Thermal properties' →
+            # '11. Thermal properties'；display-only，数字语言中立，
+            # 译文同样前置）
+            if b.get("_pos_num") and not display[:1].isdigit():
+                display = f"{b['_pos_num']}. {display}"
             dkey = _normalize(display)
             if partition_level is not None and level <= partition_level:
                 if _similar(dkey, prev_unit_key) and cur is not None:
@@ -1119,7 +1152,11 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 units.append(cur)
                 prev_unit_key = dkey
             elif level <= spine_level:
-                if _similar(dkey, prev_unit_key) and cur is not None:
+                # 判重只许同 kind 合并：'STRUCTURE' 分区页与 'Crystal structure'
+                # 章仅一词重合，跨 kind 的包含判重会把分区首章吞进分区页
+                # （病例 022，CM 四个 Part 的首章全被吞）
+                if cur is not None and cur["kind"] == "chapter" \
+                        and _similar(dkey, prev_unit_key):
                     # 重复/相似章标题（章题页重复、分隔页碎片）→ 不新开章
                     if len(dkey) > len(prev_unit_key) or _PARTITION_HINT.match(display):
                         cur["title"] = display
@@ -1138,7 +1175,12 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 htag = f"h{min(level - spine_level + 2, 6)}"
                 cur["parts"].append(f'<{htag} id="{anchor}">{_mathmlify(convert(display))}</{htag}>')
                 if level == spine_level + 1:
-                    cur["subs"].append((level, display, anchor))
+                    # 跨页近似重复去重：与上一子标题去标点包含即跳过
+                    # （subs 分支此前无判重，病例 Feeling Great 的
+                    # '4 Karen's Story'/'4. Karen's Story' 双目录）
+                    if not cur["subs"] or not _similar(
+                            _normalize(cur["subs"][-1][1]), dkey):
+                        cur["subs"].append((level, display, anchor))
             continue
 
         # ── 页脚注：收集待锚定，章末尾注统一渲染 ──
@@ -1678,7 +1720,10 @@ def generate_epub(
     book.add_item(epub.EpubNav())
 
     epub_path = Path(output_dir) / f"{_sanitize_filename(title)}.epub"
-    epub.write_epub(str(epub_path), book)
+    # epub3_pages 关闭：本管线不生成 pagebreak 锚点，开启时 ebooklib 会把
+    # 脚注回链（<a epub:type="noteref" id="fnref_N">）误收进 page-list，
+    # nav.xhtml 混入 fnref_* 条目（病例 Feeling Great）
+    epub.write_epub(str(epub_path), book, {"epub3_pages": False})
 
     logger.info(
         f"  EPUB 已生成: {epub_path} "

@@ -504,3 +504,248 @@
   附录标签措辞差异，LLM 固有波动），正文 h2/h3/h4/h5 层级正常、全书无
   "／页码"残留；合并函数零改动（git diff 仅触及 _build_toc_lookup 一行
   正则与 stage2），必须保卫社会 267 处合并无回吐机制。
+
+## 病例 019｜Feeling Great / PaddleOCR — 目录采样截断 + 退化锚点毒化全书层级
+
+- **现象**：544 页英文书转换成品目录稀碎——nav ~108 条混入 '1. _____'
+  （填空行）/'总计'/'我说：'/'钦定四庫全書'（PaddleOCR 幻读块）等垃圾 L1 章；
+  真第 11–19 章从目录消失；同章出现'编号版+无编号版'双条目；fnref_* 脚注
+  回链混进目录。QC 却报 anchor_hit 25/25 全绿。
+- **根因链**（六个独立缺陷叠加，均为 stage2/stage3 自身逻辑，与 OCR 无关——
+  实测 PaddleOCR 章首块 text_level=1 与两页印刷目录识别均完好）：
+  1. `_PAGE_CHARS=800` 截断：两页印刷目录 1263/953 字符被腰斩 → toc_entries
+     缺 11–19 章与 Section II，并产生退化条目 'VI.'（无文字无页码）；
+  2. `_match_anchor` 模糊兜底 off-by-one：`best_dist` 起始 3，而
+     `_edit_distance_le` 超限返回 limit+1（短锚点=2）仍被接受 → 所有 4–7
+     字符短块（total/1._____/•mania/isaid:/欽定四庫全書）全部模糊命中 'vi.'；
+  3. 锚点救援无视觉证据闸门：纯文本块命中即晋升并 `_anchored` 锁死，
+     124 处救援混入全部垃圾；垃圾 L1 再污染 `_sink_unanchored_plain`/
+     全局定级的"最近锚定块"地板 → 真 12 章被压到 L3 掉出 nav，
+     13 章靠前一个垃圾锚洗地板反而幸存（层级扭曲具有系统性）；
+  4. `extract_label2` 接受合同外 level=0 → 第 18 章成"是标题但所有
+     level>0 过滤都看不见"的僵尸块，被 stage3 当正文并入上一章；
+  5. `_spine_from_toc` 只认 part/chapter/第X章词形，英文 'I. …'/'1. …'
+     纯数字目录全失配 → spine 回退启发式=最小层级 1 → 垃圾 L1 全部开章；
+  6. 跨页近似重复零去重（'4 Karen's' vs '4. Karen's' 标点之差）+ subs
+     分支无条件 append + ebooklib `epub3_pages` 默认把 noteref 回链收进
+     page-list。
+  7. QC 虚绿的机制：`_light_metadata_pass` 只检查"toc 里的条目是否锚上"，
+     缺失章不在 toc 里就永远不可见；且复用同一个有 off-by-one 的
+     `_match_anchor` 批自己的卷子。
+- **修补**：
+  - stage2_common：`_PAGE_CHARS` 800→4000；`_build_anchors` 拒收有效字符
+    <3 且无 CJK 的退化键；`_match_anchor` 模糊候选必须 d≤limit（超限即弃）；
+    `_SHAPE_PATTERNS` 新增 num_bar（'12 | Title' 竖线编号，否则按 plain
+    被下沉机制误压）；`_calibrate_levels` 救援加**位置闸门**——已锚定标题
+    估计印刷页→扫描页偏移，纯文本块须落在预测 ±8 页内（杀 CliffsNotes
+    精华章里逐条命中锚点的章节摘要表交叉引用）；引擎已标标题的块豁免闸门
+    （前置页罗马页码/附录另起页码 regime 下全局偏移本不成立——
+    'Acknowledgments' ix、刘擎'补充讲解' 289→371 两道误杀实测追回）。
+  - popo/inference：`extract_label2` 拒收 level=0（块保持推理前状态，
+    交锚点救援兜底）。
+  - stage3_epub：`_PARTITION_HINT` 补罗马数字分区（'I. …'/'Section IV'）、
+    `_CHAPTER_HINT` 补纯数字编号章（'12. …'）；`_similar` 判重去标点/
+    大小写（跨页近似重复合并）；subs 分支补相邻判重；`write_epub` 关
+    `epub3_pages`（管线本就不产 pagebreak 锚点）。
+  - qc_book：新增"孤儿章节标题"反向校验——正文章节编号形状的标题块无
+    目录条目对应即报（显式'第X章/Chapter'红、纯数字黄），专杀"锚定全绿
+    但成品缺章"的盲区。
+- **回归**：tests/test_structure_rescue.py 新增 24 例（截断/退化锚/模糊
+  off-by-one 正反例/level=0/spine 词形/num_bar/位置闸门与豁免），
+  既有套件 toc 44/44、merge OK、promote OK 全绿。
+  真书验证（--skip-mineru 复用缓存）：Feeling Great 目录条目 29→43 全量、
+  partition=1/spine=2 正确识别、锚定 38/38、nav 主干 33 章+6 分区有序完整、
+  垃圾条目清零、fnref 清零；刘擎西方现代思想讲义既有红牌'答学友问未锚上'
+  转为 55/55 全锚定；伊豆の踊子（无目录页书）新旧 nav 等价无回归。
+- **残留**（引擎已标标题块不参与位置闸门，属视觉证据优先的既定取舍）：
+  书末索引/推荐页里被 VLM 标成标题的分区名（'III. …'/'V. …'）与正文
+  '26. Let's Be Specific' 引用框，共约 6/217 条 nav 错位/重复。
+- **状态**：已修复并验证（2026-09-03）。SageRead sidecar exe 需择期重打
+  （binaries/books_converter-x86_64-pc-windows-msvc.exe 仍为旧码）。
+
+## 病例 020｜Feeling Great / stage4 — 批响应缺号静默收编 → 整批译文错位并经续翻缓存扩散
+
+- **现象**：病例 019 结构修复后的成品的章题译文错位——'11 | The Great
+  Escape' 章题显示为 '2. ___'、'10 | …' 块译文为 '1. 全或无思维。…'
+  （别块的译文）；整章从 nav 消失（译文垃圾化后被相似判重吞并）。
+- **根因链**：`_translate_batch` 按序号 1..N 静默映射批响应，模型合并
+  短碎片/跳号时响应条数 < 批条数，其后所有条目映射整体后移错位；
+  错位译文写入 translations.json 断点缓存，续翻/重跑无条件复用 →
+  结构修复后的二跑仍继承毒化译文（SageRead 侧 018 已加固同款校验，
+  本书侧漏网）。
+- **修补**（stage4_translate.py `_translate_batch`）：只接受 1..N 全覆盖
+  且非空的批响应；缺号/非字典即抛错进既有 重试→拆半 自救链；
+  失败方向 = 保留原文，绝不产出可疑映射。
+- **回归**：tests/test_stage4_translate.py 7 例（全覆盖对位/坏响应全批
+  留原文/顶层跳号拒收+拆半自救/首缺后拆半齐全）。真书验证：删除毒化
+  translations.json 全量重译（4566 条），'11 | …大逃亡' 等全部章题
+  译文归位，nav 由 206 条（含幻影）收敛到 129 条干净结构。
+- **备注**：拆半到单条粒度后，"单条批的紧凑缺号"在原理上不可检测
+  （{1: …} 对单条批即是全覆盖）——残余风险仅限单条文本错误，无整批
+  错位可能。
+- **状态**：已修复并验证（2026-09-03）。
+
+## 病例 021｜Feeling Great / stage2 — 无编号标题层级错乱三连修：子串覆盖率、锚点身份查重、垃圾否决器
+
+- **现象**（019 修复后的残留）：幻影 L1 分区'抑郁'吞没 4–11 章；'具体化'
+  （worksheet 框标题）成 L2 章；索引字母字头 'A'/'I'/'V' 上目录；署名行
+  '马克·诺布尔博士 著' 成章；同章双目录（'5 梅兰妮'/'梅兰妮'）因译文措辞
+  差异（梅兰妮/梅琳达）逃逸显示层查重。用户实测确认：字号聚类在该扫描件
+  上无分离度（真章标题 bbox 高/页中位行高比值 0.12–6.11，嫌疑人
+  0.44–1.47，完全重叠；同一章两次识别可差 2.4 倍）——几何信号只能维持
+  "只许下沉"辅助地位，层级修复必须靠文本/结构机制。
+- **根因链与修补**（均在 stage2_common.py）：
+  1. `_match_anchor` 子串规则无覆盖率要求：单词块 'Depression'（10 字符）
+     子串命中 41 字符分区条目 'I. How to Turn Depression…' → 锁 L1 + 富化
+     改写内容，source_id 仍指原块 → 译文查询取回 '抑郁'（幻影分区本体）。
+     **修**：子串命中须 len(块) ≥ max(8, 0.4×锚长)。
+  2. 前缀规则无最低长度：单字母 'A' 前缀命中 'Acknowledgments'。
+     **修**：前缀命中须 len(块) ≥ 3 或含 CJK。
+  3. 跨页重复无"身份"判据：**新增 `_dedup_anchored_titles`**——命中同一
+     目录条目的多个标题块只留一个。"留谁"用**目录序三明治一致性**（唯一
+     命中锚点作骨架，候选须落在骨架相邻锚点的目录序区间内），不依赖印刷
+     页码偏移（免疫附录另起页码/罗马页码 regime，刘擎'补充讲解' 289→371
+     不受影响）；一致者优先，平级留阅读顺序首个（章题页先于章首重复页）。
+     教训：首版用"印刷页+局部偏移最近者"被重复印刷的章题野票带偏
+     （把含正文章节开篇的块降格、章节起始错位 2 页），实测后改三明治法。
+  4. 无锚 plain 标题无否决器：**新增 `_veto_junk_titles`**——单字母/
+     单 CJK 字/署名行（著译主编/by X）/单个英文词的无锚无编号块直接降回
+     正文；锚定块豁免。只降格不晋升，失败方向安全。
+  5. 下沉地板试验失败回滚：曾试"最近章级锚定"双锚取严地板，破坏
+     刘擎'答学友问'系列（父 L1 子 L2 被压成 L3，tests/test_stage2_toc.py
+     test_sink_after_rescue_ordering 拦截）——既有"最近锚定+1"语义正确，
+     不动。
+- **回归**：tests/test_structure_rescue.py 扩至 33 例全绿；既有套件
+  toc 44/44、merge OK、promote OK、stage4 7/7 全绿。
+  真书（全部结构-only，不翻译）：Feeling Great nav 147 条、六分区 33 章
+  有序完整、垃圾条目清零、ch12 章首正文归位；刘擎 QC 全绿（55/55）；
+  伊豆の踊子（无目录页书）无变化无回归。
+- **残留（可接受）**：'Section II'/'II. …' 分区扉页与锚点双 L1 并存；
+  'About the Author' 尾部两条；章首重复标题降格为正文段落会在章首
+  h2 后多显示一行同文标题（内容不丢原则的代价）；ch33 技巧 1–4 嵌在
+  32 章下（表格跨页边界）；QC 对 _rescue_by_page 的合法合成块仍报
+  幻影 RED（该规则保守，本书合成位置正确）。
+- **状态**：已修复并验证（2026-09-03，结构-only；翻译择期再跑）。
+
+## 病例 022｜Condensed Matter / PDF 书签先验 — 通用 'Chapter N' 书签名无文本锚定力（挂账待修）
+
+- **现象**：419 页教科书，PDF 自带 31 条书签但条目名为 'Chapter 1'…
+  通用词（无真实标题文字）→ 正文标题块是 '1 Crystal structure' 形态，
+  文本锚定全灭（anchor_hit 12/31），章/节/小节层级坍缩为平铺 L2；
+  页码救援按位置合成出 '9781107017108'（ISBN）幻影标题。
+- **根因**：`_sanitize_pdf_toc` 只防'标题／页码'假目录，不识别"通用名"
+  书签树的信息量缺失；锚定体系全部建立在文本相似上，对"纯泛名"条目
+  无计可施。书签页码是扫描页真值（无印刷/扫描偏移问题）这一免费信号
+  闲置未用。
+- **修补**（2026-09-05 实施并验证）：
+  - `_sanitize_pdf_toc`：纯数字长串条目（ISBN '9781107017108'）拒收。
+  - `_normalize_generic_outline_levels`（新）：全平 outline（Part/Chapter
+    同层）含泛名条目时按标签类别重建层级（Part→L1、Chapter→L2）——
+    否则 `_spine_from_toc` 读到平层，spine 退化为 1，章/节全被压平。
+  - `_anchor_generic_outline`（新）：泛名条目按书签页（扫描页真值，无
+    印刷/扫描偏移）锁定该页首个未锚定标题块；页内无标题块时晋升首个
+    类标题文本块（书签页=章首页强证据，CM 第 2 章章题未被标出照样归位）。
+  - stage3 `_render_popo_body` 章级判重只许同 kind 合并：'STRUCTURE'
+    分区页与 'Crystal structure' 章仅一词重合，跨 kind 包含判重把四个
+    Part 的首章全吞进分区页（既有隐藏 bug，被层级修复后暴露）。
+  - stage3 `_body_range`：泛名 outline 条目页码回收正文起点（LLM 前页
+    分类波动把 p22 分区页划进 front_matter 的实测波动，toc_source=
+    outline 标记防止印刷页 LLM 目录误用）。
+  - qc_book：`_pos_anchor` 位置锚定块计入锚定命中。
+- **回归**：tests/test_structure_rescue.py 扩至 49 例全绿（泛名识别/
+  ISBN 拒收/位置锚定/未标出晋升/层级重建/spine/正文起点回收）；
+  既有套件全绿。CM 真跑：anchor_hit 12/31 → 30/30，PART I–IV 分区
+  下 18 章正确嵌套、节/小节归位、Summary/Exercises 保留；
+  FG/刘擎/Born a Crime/German Ideology 护栏无回归。
+- **残留**：CM 第 2 章章题取到 'Introduction'（晋升按页内阅读顺序首个
+  文本块，该页布局如此）；'PART I'/'STRUCTURE' 分区扉页与锚点双 L1 并存
+  （与 FG 'Section II'/'II.' 同类妆饰级重复）；'Front' 合成幻影 1 个。
+- **状态**：已修复并验证（2026-09-05）。
+
+## 病例 021 追记（同日二轮）
+
+- 单词否决器误伤复发型章末小节：'Summary'/'Exercises' 每章复发，
+  初版单 token veto 全部降格。**修**：无锚 plain 短标题复发 ≥3 次豁免
+  （复发=教科书固定小节的稳定特征）；字母/孤字/署名否决不豁免（索引
+  字母字头同样复发）。单元测试 34/34。
+- 英文书结构-only 回归（暂存副本全量）：Born a Crime（431 页，参考
+  EPUB 对照）Part I–III 与 ch1–18 全对，残差=三个 150+ 字符超长章题
+  （ch10/12/14，多行 OCR 拆块超文本匹配上限，既有局限）与 Part I 章
+  平铺未嵌套；The German Ideology（1047 页，无目录页无书签）形状栈
+  路径产出干净德文学术结构（I. Feuerbach A/B/C、II. Sankt Bruno 1–4、
+  III. Sankt Max…）；Condensed Matter 暴露病例 022（既有洞）。
+
+## 病例 023｜QFT（A Modern Introduction）/ MinerU — spine 词形过度匹配压平层级 + 章首 mini-TOC 误伤与运行头顶替
+
+- **现象**（v1.3.5 sidecar 转换产物，用户实测发现）：
+  1. 第 5 章与 5.1–5.9 节在 nav 全部平级（旧版层级正确）；
+  2. 第 4 章标题标记落在章开启之后两页的运行头上，真正的章首句
+     'From the basic principles of quantum mechanics…' 溜进 3.7 习题
+     小节末尾（"电影播了十分钟才标开头"）。
+- **根因链**（三个独立缺陷）：
+  1. `_CHAPTER_HINT` 的纯数字编号词形 `\d{1,3}[.、．)]\s*\S` 不区分单级
+     与多级编号：'1.1 Overview'/'5.5.1 …' 这类小节条目被误判为章，
+     chap_lv=2 → spine=2 → stage3 把所有 L1/L2 块都开成独立章（压平）。
+     **修**：分隔符后加 (?!\d) 负向前瞻，多级编号不再命中（病例 021
+     为 Feeling Great '12. …' 引入词形时的过匹配）。
+  2. 章首 mini-TOC 页（本书每章开头印有带页码的小目录）与全局目录共享
+     "≥3 条目行+数字块"形态，被 `_repair_toc_pages`/
+     `_detect_toc_pages_by_entries` 一并标为目录页 → 真章题随降格消失
+     （实测 ch3/4/5 的章首页 58/98/195 全中）。**修**：目录页降格只作用于
+     书首 ≤25 页（全局目录永在前页；章首 mini-TOC 必在深页）。
+  3. 真章题消失后，锚点救援不设类型闸门，把下一页 suffix 命中的运行头
+     （header 噪声块）晋升为章标题并锚定——标题标记整体后移一页。
+     **修**：救援跳过 header/footer/page_number/aside_text/discarded
+     噪声类型（真章题获救后由 2 的修复保证，运行头再无机可乘）。
+- **回归**：tests/test_structure_rescue.py 扩至 51 例全绿（多级编号词形/
+  运行头不晋升）；既有套件全绿。QFT 真跑（mineru 缓存）：5 章下 5.1–5.9
+  正确嵌套、ch4 标题归位且章首句回本、anchor_hit 133/133；
+  FG 38/38、刘擎全绿、CM 30/30 护栏无回归。
+- **残留**：章首 mini-TOC 行被锚定为节标题时带页码尾巴
+  （'4.1 Scalar fields 83' 标签不美观，内容归位正确）；空章黄灯若干
+  （mini-TOC 行空壳章）。
+- **状态**：已修复并验证（2026-09-05，sidecar v1.3.6 已部署）。
+
+## 病例 024｜QFT / stage2 锚定 — 'Problem N.M.' 编号前缀差导致习题节锚不上
+
+- **现象**：习题章的节标题（'Problem 3.1. The fine structure of the hydrogen
+  atom'）锚不上目录条目（'The fine structure of the hydrogen atom'——印刷
+  目录省略 Problem N.M. 前缀），11 条节标题未锚（133/144）；且因 LLM
+  提取目录时是否保留前缀而呈现偶发波动（前一轮曾 133/133）。
+- **根因**：锚点匹配的 exact/prefix/suffix 规则都不覆盖"块=编号前缀+条目"
+  形态；编辑距离因前缀过长超限。编号前缀是 OCR 与目录的系统性差异形态
+  （物理/习题类教科书普遍）。
+- **修补**（stage2_common.py `_match_anchor`）：新增 `_PROBLEM_PREFIX_RE`
+  剥离键——problem/exercise/example/aufgabe/problème/exercice/习题/例题/
+  问题/练习/思考 + 数字编号，剥掉后补一轮精确命中；严格限定词表且必须带
+  数字编号（'Problems' 不触发），只补精确、不进模糊兜底（防过匹配）。
+- **回归**：tests/test_structure_rescue.py 扩至 55 例全绿；既有套件全绿。
+  QFT 真跑 142/144（剩 2 条为公式节标题，另一类问题）；FG 38/38、
+  刘擎全绿、CM 30/30 护栏无回归。
+- **残留**：公式型节标题（'$K^{0}\rightarrow\pi^{-}l^{+}\nu_{l}$' 等）
+  锚不上——LaTeX 公式串与目录 OCR 形态差异大，需要公式归一化专题处理。
+- **状态**：已修复并验证（2026-09-05，sidecar v1.3.7 已部署）。
+
+## 病例 022 追记（2026-09-05 三轮）：CM 章题漏标/误标与裸章号
+
+- **现象**（用户比对 PDF 实锤）：ch11/12/13 一级标题丢失（'Thermal
+  properties' 单独成段无 level）；ch2/ch10 章题被 'Introduction' 顶替；
+  锚定成功的章也只有裸文本、章号丢失。
+- **根因链**（三层，均在泛名书签位置锚定的候选规则）：
+  1. 章题常被引擎标成 header（页顶大字与页眉同位，'Amorphous structure'）
+     或投票缺失 level=0（'Electrons: the free electron model'）——旧候选
+     只认 title+level>0，全书 1/3 的章题不在候选集；
+  2. 阅读顺序兜底取页内首个文本块 → 选中复发型小节头 'Introduction'；
+  3. 泛名条目（'Chapter N'）无真实标题文字可富化 → 裸章题无章号。
+- **修补**：
+  - 候选扩列 title/header/text + **页顶优先**（bbox y1 最小者；章扉页
+    不挂前章运行头，页顶即章题）；纯文本块晋升加 ≤45% 页高闸（bbox
+    缺失不闸——无位置信息时保留阅读顺序兜底）；
+  - 本章小节排除：'Chapter N' 条目拒绝 'N.M' 开头的候选块（防节冒充章）；
+  - 记录 `_pos_num`，stage3 显示层补章号（display-only，译文同样前置）。
+- **回归**：tests/test_structure_rescue.py 扩至 59 例全绿；既有套件全绿。
+  CM 真跑：ch9–14 全部带号归位（'9. Liquid dynamics'、'10. Crystal
+  vibrations'、'11. Thermal properties'、'12. Electrons: the free
+  electron model'…），节正确嵌套 L3；FG 38/38、刘擎全绿、
+  QFT 133/133 护栏无回归。
+- **状态**：已修复并验证（sidecar v1.3.8 已部署）。

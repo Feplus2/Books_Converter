@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from stage2_common import (_build_anchors, _detect_toc_pages_by_entries,  # noqa
-                           _match_anchor, _normalize_title)
+                           _match_anchor, _normalize_title, _title_shape)
 
 _SKIP_TYPES = {"header", "footer", "page_number", "aside_text",
                "discarded", "chart"}
@@ -175,6 +175,11 @@ def check_book(work_dir: str) -> dict:
                 hit = any(
                     _match_anchor((b.get("content") or "").strip(), forms)
                     for b in titled)
+                if not hit:
+                    # 泛名书签位置锚定命中（'Chapter N' 式条目按页锁定的块，
+                    # 病例 022：文本永远配不上，但块已被位置锚定）
+                    hit = any(b.get("_pos_anchor") in {a[0] for a in forms}
+                              for b in titled)
                 if not hit and fuzzy_rescued:
                     # 系列块位置晋升（'答学友问1' 之于 '答学友问'）：
                     # 严格匹配被系列守卫拦截，但页码救援已按位置验证晋升
@@ -213,6 +218,32 @@ def check_book(work_dir: str) -> dict:
         stats["dup_titles"] = dups
         if dups:
             yellow.append(f"重复标题 {dups} 个（同文同级相邻页）")
+
+        # 目录完整性反向校验：正文检测到章节编号形状的标题块，却无目录条目
+        # 与之对应 → 目录本身不完整。锚定检查只看"toc 里的条目是否锚上"，
+        # 看不见"toc 里根本没有的章"（病例 Feeling Great：目录采样 800 字符
+        # 截断致 11-19 章条目丢失，anchor_hit 25/25 全绿但成品缺 10 章）。
+        if toc and titled:
+            anchors2 = _build_anchors(toc)
+            num_title = re.compile(r"^\d{1,3}\s*[.、．|｜]?\s*\S")
+            hard, soft = [], []
+            for b in titled:
+                t = (b.get("content") or "").strip()
+                if len(_normalize_title(t)) < 4:
+                    continue
+                explicit = _title_shape(t) in ("chap_cn", "chap_en")
+                if not explicit and not num_title.match(t):
+                    continue
+                if not _match_anchor(t, anchors2):
+                    (hard if explicit else soft).append(
+                        f"p{b.get('page')} {t[:30]}")
+            stats["orphan_titles"] = len(hard) + len(soft)
+            if hard:
+                red.append(f"章节标题无目录条目 {len(hard)} 个"
+                           f"（目录不完整）: {hard[:5]}")
+            if soft:
+                yellow.append(f"数字编号标题无目录条目 {len(soft)} 个"
+                              f"（目录不完整或为小节编号）: {soft[:5]}")
 
         # 空章（标题节点：自身无内容、无正文后代、无子标题）
         tree = structure.get("tree") or {}
