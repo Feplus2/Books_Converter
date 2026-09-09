@@ -240,5 +240,80 @@ class VisibleTextTest(unittest.TestCase):
             "值 x ①")
 
 
+class DividerDedupSameKindTest(unittest.TestCase):
+    """divider 判重只许同 kind 合并（病例 028 续·BAC：
+    'PART III' 分区页被包含判重误并进标题以 'Part III: The Dance' 收尾的
+    ch14——章被改名、分区页消失）"""
+
+    def _render(self, blocks):
+        from stage3_epub import _render_popo_body
+        toc = [{"text": "Part I", "level": 1, "page": None},
+               {"text": "Chapter 1: Run", "level": 2, "page": None}]
+        return _render_popo_body(blocks, [], 1, 99, False, "Test Book",
+                                 toc_entries=toc)
+
+    def test_chapter_ending_with_part_word_not_swallowed(self):
+        blocks = [
+            {"id": 1, "type": "title", "content": "Chapter 13: Colorblind",
+             "page": 10, "level": 2},
+            {"id": 2, "type": "text", "content": "ch13 正文第一段。",
+             "page": 10, "level": -1},
+            {"id": 3, "type": "title",
+             "content": "Chapter 14: A Young Man’s Long, Awkward, Occasionally "
+                        "Tragic, and Frequently Humiliating Education in Affairs "
+                        "of the Heart, Part III: The Dance",
+             "page": 12, "level": 2},
+            {"id": 4, "type": "text", "content": "ch14 正文。",
+             "page": 12, "level": -1},
+            {"id": 5, "type": "title", "content": "PART III",
+             "page": 14, "level": 1},
+            {"id": 6, "type": "text", "content": "Part III 分隔页后正文。",
+             "page": 15, "level": -1},
+        ]
+        units = self._render(blocks)
+        kinds = [(u["kind"], u["title"]) for u in units]
+        self.assertTrue(
+            any(k == "chapter" and t.startswith("Chapter 14") for k, t in kinds),
+            f"ch14 丢失或被改名: {kinds}")
+        self.assertTrue(
+            any(k == "divider" and t == "PART III" for k, t in kinds),
+            f"PART III 未独立成编: {kinds}")
+
+    def test_divider_dedup_same_kind_still_merges(self):
+        """正例：divider←divider 的相似合并保持（'Part II: 权利变动' 后紧跟
+        碎片 '权利变动' → 合并，标题保留长形态）"""
+        blocks = [
+            {"id": 1, "type": "title", "content": "Part II: 权利变动",
+             "page": 10, "level": 1},
+            {"id": 2, "type": "title", "content": "权利变动",
+             "page": 11, "level": 1},
+            {"id": 3, "type": "text", "content": "正文。",
+             "page": 12, "level": -1},
+        ]
+        units = self._render(blocks)
+        dividers = [u for u in units if u["kind"] == "divider"]
+        self.assertEqual(len(dividers), 1,
+                         f"碎片 divider 未合并: {[u['title'] for u in units]}")
+        self.assertEqual(dividers[0]["title"], "Part II: 权利变动")
+
+
+class TitleDisplayTagStripTest(unittest.TestCase):
+    """标题显示层剥 HTML 标签（病例 031：'第二章 土耳其<sub>：</sub>地缘…'
+    不能挂进章题/nav）"""
+
+    def test_sub_tag_stripped_from_title_display(self):
+        from stage3_epub import _render_popo_body
+        blocks = [
+            {"id": 1, "type": "title",
+             "content": "第二章 土耳其<sub>：</sub>地缘格局重构中的“土耳其症候”",
+             "page": 5, "level": 2},
+            {"id": 2, "type": "text", "content": "正文段落。", "page": 5, "level": -1},
+        ]
+        units = _render_popo_body(blocks, [], 1, 99, False, "T")
+        titles = [u["title"] for u in units]
+        self.assertTrue(any("<sub>" not in t and "土耳其：" in t for t in titles),
+                        f"标签未剥除: {titles}")
+
+
 if __name__ == "__main__":
     unittest.main()

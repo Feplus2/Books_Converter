@@ -21,6 +21,15 @@ PDF ──▶ Stage 1 解析引擎（云端 OCR/版面分析）
                 DeepSeek 分批+上下文+译名表；translations.json 断点续翻
 ```
 
+## LLM 调用约定
+
+所有 chat.completions 调用必须经 `llm_thinking.chat_create` 包装（5 处：
+stage2_hybrid ×1、stage2_common ×2、stage4_translate ×2）——思考参数进程级
+协商：能关则关（thinking:disabled），端点拒绝（400/1210）则降
+reasoning_effort=low（对齐 SageRead reasoning-map.ts 恒思考模型取最低档的
+口径），仍拒则不下发思考参数。**不拦任何模型**（恒思考模型慢但可用）；
+并发下旧模式请求的迟到拒绝只重发不再降档（病例 025）。
+
 ## 关键数据契约
 
 ### content_list（Stage 1 → 下游的块契约）

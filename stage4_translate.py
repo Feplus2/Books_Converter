@@ -19,6 +19,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from llm_thinking import chat_create
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,8 @@ def _translate_batch(client: OpenAI, model: str, sys_prompt: str,
     last_err = None
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(
+            resp = chat_create(
+                client,
                 model=model,
                 messages=[
                     {"role": "system", "content": sys_prompt},
@@ -114,7 +116,6 @@ def _translate_batch(client: OpenAI, model: str, sys_prompt: str,
                 ],
                 max_tokens=16384,
                 temperature=0.3,
-                extra_body={"thinking": {"type": "disabled"}},
             )
             raw = resp.choices[0].message.content
             result = json.loads(_clean_json_response(raw))
@@ -248,12 +249,12 @@ def translate_book(content_list: list, meta: dict, work_dir: str,
     title_zh = meta.get("title_zh") or ""
     if not title_zh and title and target_lang == "zh":
         try:
-            resp = client.chat.completions.create(
+            resp = chat_create(
+                client,
                 model=DEEPSEEK_MODEL,
                 messages=[{"role": "user", "content":
                            f"把书名翻译成中文，只输出译名，不要解释:\n{title}"}],
                 max_tokens=64, temperature=0.2,
-                extra_body={"thinking": {"type": "disabled"}},
             )
             title_zh = (resp.choices[0].message.content or "").strip().strip("《》")
         except Exception:

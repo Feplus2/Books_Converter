@@ -234,10 +234,10 @@ def main():
         # ═══ Stage 2: 结构分析（Hybrid 引擎） ════════════════════════
         structure = None
         if not args.skip_deepseek:
-            # PDF 书签（outline）是 born-digital PDF 的免费目录真值，先验注入
-            pdf_toc = _read_pdf_outline(pdf_path)
-            if pdf_toc:
-                logger.info(f"  PDF 书签: {len(pdf_toc)} 条（作为目录先验注入）")
+            # PDF outline/书签先验已弃用（病例 028，用户拍板 2026-09-09）：
+            # 扫描本第三方书签形态不可控（假目录/泛名条目/页码书签洪水三连），
+            # 只信 OCR 重建目录 + 前后页词表锚定。_read_pdf_outline 保留备查。
+            pdf_toc = None
             pw.update_stage(2, "Hybrid", "正在准备结构分析...")
             t0 = time.time()
             try:
@@ -369,10 +369,9 @@ def main():
 def _read_pdf_outline(pdf_path: Path) -> list:
     """PDF outline/书签 → toc_entries 格式的目录先验。
 
-    born-digital PDF（如 LaTeX 排版直接导出的书）自带书签，是免费的结构
-    真值，优先级高于 LLM 从目录页提取（或编造）的 toc_entries。
-    书签目标是 PDF 物理页（get_toc 返回 1 起页码），与扫描页码同 regime；
-    扫描本通常没有书签 → 返回 []，不影响原流程。
+    ⚠️ 已弃用（病例 028）：扫描本第三方书签形态不可控（'标题／页码'假目录、
+    泛名 'Chapter N'、页码书签洪水），调用方已于 2026-09-09 停用。
+    函数保留备查/调试；若要恢复，先过 _sanitize_pdf_toc 再注入。
     """
     try:
         import fitz

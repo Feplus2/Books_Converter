@@ -763,6 +763,154 @@ def test_sanitize_pdf_toc_clean_kept_stray_stripped():
 
 # ──────────────────────────────────────────────────────────────
 
+def test_sanitize_pdf_toc_digit_flood():
+    """页码书签洪水（病例 025 续·汉语语义学）：outline 432/436 条是纯数字
+    （每页页码录成一条书签）→ 整体丢弃，回退 LLM 目录提取。
+    残留的 封面/版权/前言/目录 若留任会把'前言'锚成唯一 L1，下沉压平全书。"""
+    from stage2_common import _sanitize_pdf_toc
+    toc = [{"text": "封面", "level": 1, "page": 1},
+           {"text": "前言", "level": 1, "page": 4}] +           [{"text": str(i), "level": 1, "page": 15 + i} for i in range(1, 430)]
+    assert _sanitize_pdf_toc(toc) == []
+
+
+def test_sanitize_pdf_toc_scattered_digit_entries_dropped():
+    """好书签里混入零散页码书签：逐条剥除纯数字条目，保留真条目"""
+    from stage2_common import _sanitize_pdf_toc
+    toc = [{"text": "第一章 函数与极限", "level": 1, "page": 10},
+           {"text": "12", "level": 1, "page": 12},
+           {"text": "第二章 导数", "level": 1, "page": 30},
+           {"text": "1976", "level": 1, "page": 40},
+           {"text": "附录", "level": 1, "page": 200}]
+    out = _sanitize_pdf_toc(toc)
+    assert [e["text"] for e in out] == ["第一章 函数与极限", "第二章 导数", "附录"]
+
+
+def test_sanitize_pdf_toc_good_outline_untouched():
+    """正常书签（无页码尾巴、无纯数字）原样保留——失败方向必须是不动作"""
+    from stage2_common import _sanitize_pdf_toc
+    toc = [{"text": "前言", "level": 1, "page": 4},
+           {"text": "第一章 语义研究的发展与现状", "level": 1, "page": 16},
+           {"text": "一 语文学时期及我国的训诂学", "level": 2, "page": 16}]
+    out = _sanitize_pdf_toc(toc)
+    assert [e["text"] for e in out] == [e["text"] for e in toc]
+
+
+# ── 前后页词表锚定（病例 028）──────────────────────────────
+
+def _pblk(type_, content, page, level=-1):
+    return {"type": type_, "content": content, "page": page, "level": level}
+
+
+def test_fm_lexicon_front_items_locked_l1():
+    """前言（括号署名）/版权页（text 块晋升）/Preface（英文）锚定锁 L1"""
+    from stage2_common import _anchor_frontmatter_lexicon
+    blocks = [
+        _pblk("title", "前言（贾彦德）", 4, -1),
+        _pblk("text", "版权页（CIP数据）", 3),
+        _pblk("title", "Preface", 5, 2),
+        _pblk("title", "第一章 语义研究的发展与现状", 16, 1),
+    ]
+    n = _anchor_frontmatter_lexicon(blocks)
+    assert n == 3
+    assert blocks[0]["level"] == 1 and blocks[0].get("_fm_rule")
+    assert blocks[1]["type"] == "title" and blocks[1]["level"] == 1
+    assert blocks[2]["level"] == 1
+    assert "_fm_rule" not in blocks[3]
+
+
+def test_fm_lexicon_rejects_structural_and_out_of_zone():
+    """反例：导言（真章题候选）不收；非全等（'序列'）不收；出页区不收"""
+    from stage2_common import _anchor_frontmatter_lexicon
+    blocks = [
+        _pblk("title", "导言", 3, -1),
+        _pblk("title", "序列", 3, -1),
+        _pblk("title", "前言", 60, -1),            # 第一章在 p50 → 已出前页区
+        _pblk("title", "第一章 总论", 50, 1),
+        _pblk("title", "第五章 语义", 180, 1),
+        _pblk("title", "后记", 200, -1),           # 后页区（末章 p180）
+    ]
+    n = _anchor_frontmatter_lexicon(blocks)
+    assert n == 1
+    assert blocks[0]["level"] == -1 and blocks[1]["level"] == -1
+    assert blocks[2]["level"] == -1
+    assert blocks[5]["level"] == 1 and blocks[5].get("_fm_rule")
+
+
+def test_fm_lexicon_no_chapter_book_fallback():
+    """无章号书回退页区（前 25 页）：Foreword 锚定，正文不受影响"""
+    from stage2_common import _anchor_frontmatter_lexicon
+    blocks = [
+        _pblk("title", "Foreword", 3, -1),
+        _pblk("text", "It was a bright cold day in April...", 30),
+    ]
+    assert _anchor_frontmatter_lexicon(blocks) == 1
+    assert blocks[0]["level"] == 1
+    assert blocks[1]["type"] == "text"
+
+
+def test_fm_lexicon_skips_toc_pages():
+    """目录页上的词表条目是罗列行，不锚（BAC p5：Contents 列出
+    Dedication/Acknowledgments/About the Author 被锚出幻影条目的实测）"""
+    from stage2_common import _anchor_frontmatter_lexicon
+    blocks = [
+        _pblk("title", "Foreword", 3, -1),
+        _pblk("text", "Dedication", 5),
+        _pblk("title", "第一章 总论", 20, 1),
+    ]
+    n = _anchor_frontmatter_lexicon(blocks, toc_pages={5})
+    assert n == 1  # 只有 Foreword
+    assert blocks[1]["type"] == "text" and blocks[1]["level"] == -1
+
+
+def test_fm_lexicon_skips_multi_hit_page():
+    """同页 ≥2 个词表命中 = 罗列页形态（未识别出的目录页），整页不动作"""
+    from stage2_common import _anchor_frontmatter_lexicon
+    blocks = [
+        _pblk("text", "Dedication", 5),
+        _pblk("text", "Acknowledgments", 5),
+        _pblk("title", "第一章 总论", 20, 1),
+    ]
+    assert _anchor_frontmatter_lexicon(blocks) == 0
+    assert all(b["level"] == -1 for b in blocks[:2])
+
+
+def test_rescue_long_title_block_exempt_from_len_cap():
+    """引擎已标 title 的多行超长章题不受 64 字符上限（BAC ch12 实测：
+    归一化 105 字符，锚点在手仍拿不到 level）"""
+    from stage2_common import _calibrate_levels
+    entry = ("Chapter 12: A Young Man’s Long, Awkward, Occasionally Tragic, "
+             "and Frequently Humiliating Education in Affairs of the Heart, "
+             "Part II: The Crush")
+    body = ("A YOUNG MAN'S LONG,\nAWKWARD, OCCASIONALLY\nTRAGIC, AND FREQUENTLY\n"
+            "HUMILIATING EDUCATION IN\nAFFAIRS OF THE HEART,\nPART II: THE CRUSH")
+    blocks = [
+        _pblk("title", "Chapter 10: A Young Man’s Long, Awkward", 8, 2),
+        {"type": "title", "content": body, "page": 10, "level": -1},
+    ]
+    toc = [{"text": "Chapter 10: A Young Man's Long, Awkward", "level": 2, "page": None},
+           {"text": entry, "level": 2, "page": None}]
+    _calibrate_levels(blocks, toc)
+    assert blocks[1]["level"] == 2, f"超长标题块应被救援赋级，实得 {blocks[1]['level']}"
+
+
+def test_rescue_long_text_block_still_capped():
+    """反例：同长度的纯文本块仍被 64 上限挡住（防正文段落误晋升）"""
+    from stage2_common import _calibrate_levels
+    entry = ("Chapter 12: A Young Man’s Long, Awkward, Occasionally Tragic, "
+             "and Frequently Humiliating Education in Affairs of the Heart, "
+             "Part II: The Crush")
+    body = ("A YOUNG MAN'S LONG,\nAWKWARD, OCCASIONALLY\nTRAGIC, AND FREQUENTLY\n"
+            "HUMILIATING EDUCATION IN\nAFFAIRS OF THE HEART,\nPART II: THE CRUSH")
+    blocks = [
+        _pblk("title", "Chapter 10: A Young Man’s Long, Awkward", 8, 2),
+        {"type": "text", "content": body, "page": 10, "level": -1},
+    ]
+    toc = [{"text": "Chapter 10: A Young Man's Long, Awkward", "level": 2, "page": None},
+           {"text": entry, "level": 2, "page": None}]
+    _calibrate_levels(blocks, toc)
+    assert blocks[1]["type"] == "text" and blocks[1]["level"] == -1
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
@@ -780,5 +928,107 @@ def _run_all():
     return failed
 
 
+def test_anchor_latex_superscript_and_command_normalization():
+    """病例 024：公式标题归一化——'$W^{\\pm}$ and $Z^{0}$' ↔ 'W± and Z0'
+    （QFT 11.4 节标题，目录 OCR 形态与正文 LaTeX 形态系统性差异）"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "11.4 Non-abelian gauge theories: the masses of W± and Z0",
+         "level": 2, "page": 278},
+    ])
+    m = _match_anchor(
+        "11.4 Non-abelian gauge theories: the masses of $W^{\\pm}$ and $Z^{0}$",
+        anchors)
+    assert m is not None and m[1] == 2
+
+
+def test_anchor_label_prefix_suffix_match():
+    """病例 024：锚点是块的尾部——块多冒号标签前缀
+    （'Complement: Isospin and flavor $SU(3)$' ↔ 目录 'Isospin and flavor SU(3)'）"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "Isospin and flavor SU(3)", "level": 2, "page": 200},
+    ])
+    m = _match_anchor("Complement: Isospin and flavor $SU(3)$", anchors)
+    assert m is not None and m[1] == 2
+
+
+def test_anchor_label_prefix_suffix_rejects_bare_suffix():
+    """反例：无冒号前缀的裸后缀不命中（防 '附录 A gauge theories review'
+    错配 'gauge theories review'）"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "gauge theories review", "level": 1, "page": 1},
+    ])
+    assert _match_anchor("appendix a gauge theories review", anchors) is None
+
+
+def test_find_toc_page_and_rule_extract_cn():
+    """病例 029/030：目录页本地探测 + 规则兜底提取（八次危机形态——
+    条目带介绍性段落、'第X部分/引言/一、'混合层级、页码 010 前导零）"""
+    from stage2_common import _find_toc_page, _rule_toc_extract
+    pages = {
+        3: "扉页文字，没有目录。",
+        23: ("目录\n推荐序 001\n自序 003\n概念提示 013\n"
+             "第一部分 中国的8次危机及其“软着陆”\n引言 021"),
+        24: ("一、从外资外债视角解析“中国经验” 010\n"
+             "将当代中国半个多世纪的四次“对外开放”的复杂背景联系在一起不难发现，"
+             "对外开放从来都是“双刃剑”：它既是机遇也是挑战，这段话很长不该收。\n"
+             "二、从危机化解视角思考中国发展的可持续性 020"),
+        25: "本章正文开始，没有页码尾巴的正文行。\n这也是正文行。",
+    }
+    assert _find_toc_page(pages) == 23
+    entries = _rule_toc_extract(pages, 23)
+    by = {e["text"]: e for e in entries}
+    assert by["推荐序"]["page"] == 1 and by["推荐序"]["level"] == 1
+    assert by["自序"]["page"] == 3
+    assert by["第一部分 中国的8次危机及其“软着陆”"]["level"] == 1
+    assert by["第一部分 中国的8次危机及其“软着陆”"]["page"] is None  # 结构词无页码也收
+    assert by["引言"]["page"] == 21
+    assert by["一、从外资外债视角解析“中国经验”"]["level"] == 3
+    assert by["二、从危机化解视角思考中国发展的可持续性"]["page"] == 20
+    assert not any("双刃剑" in t for t in by)  # 介绍性长段落不收
+
+
+def test_rule_extract_author_line_merge():
+    """中國36問形态：条目标题行无页码、作者行带页码 → 页码归条目；
+    '导论 宋怡明 (Michael Szonyi) 3' 行内作者剥除"""
+    from stage2_common import _rule_toc_extract
+    pages = {
+        7: ("目 录\n导论 宋怡明 (Michael Szonyi) 3\n第 一 部 分 政 治\n"
+            "1. 中国共产党政权是否具有合法性？\n裴宜理 (Elizabeth J. Perry) 13\n"
+            "2. 反贪腐能否救党？\n傅士卓 (Joseph Fewsmith) 19"),
+    }
+    entries = _rule_toc_extract(pages, 7)
+    by = {e["text"]: e for e in entries}
+    assert by["导论"]["page"] == 3 and by["导论"]["level"] == 1
+    assert by["第 一 部 分 政 治"]["level"] == 1 and by["第 一 部 分 政 治"]["page"] is None
+    assert by["1. 中国共产党政权是否具有合法性？"]["page"] == 13
+    assert by["1. 中国共产党政权是否具有合法性？"]["level"] == 2  # 无章 shape → N. = 章级
+    assert by["2. 反贪腐能否救党？"]["page"] == 19
+    assert not any("裴宜理" in t or "傅士卓" in t for t in by)  # 作者行不成条目
+
+
+def test_rule_extract_no_toc_page_noop():
+    """反例：无目录词页 → 探测 None；正文页无页码尾行 → 提取为空（不动作）"""
+    from stage2_common import _find_toc_page, _rule_toc_extract
+    pages = {1: "正文第一页。", 2: "另一页正文。"}
+    assert _find_toc_page(pages) is None
+    assert _rule_toc_extract(pages, 1) == []
+
+
+def test_anchor_strips_html_tags():
+    """病例 031：正文标题混入 <sub>：</sub> 等 HTML 标签不影响锚定
+    （全球化与国家竞争：文字版 PDF 文本层的下标冒号工件）"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "第二章 土耳其：地缘格局重构中的“土耳其模式”", "level": 1, "page": 166},
+    ])
+    m = _match_anchor("第二章 土耳其<sub>：</sub>地缘格局重构中的“土耳其模式”", anchors)
+    assert m is not None and m[1] == 1
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run_all() else 0)
+
+

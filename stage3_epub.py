@@ -1134,6 +1134,10 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             flush_footnotes()
             zh = _translation_of(b, translations)
             display = zh if zh else _enrich_title(text, toc_lookup)
+            # 标题显示剥 HTML 标签（病例 031：文字版 PDF 文本层把冒号排成
+            # <sub>：</sub> 混进标题——锚定键已剥标签能锚上，显示层同口径，
+            # 否则目录/nav 里挂出 '&lt;sub&gt;' 残渣）
+            display = re.sub(r"<[^>]+>", "", display)
             # 泛名书签位置锚定的裸章题补章号显示（'Thermal properties' →
             # '11. Thermal properties'；display-only，数字语言中立，
             # 译文同样前置）
@@ -1141,7 +1145,12 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 display = f"{b['_pos_num']}. {display}"
             dkey = _normalize(display)
             if partition_level is not None and level <= partition_level:
-                if _similar(dkey, prev_unit_key) and cur is not None:
+                # 判重只许同 kind 合并（divider←divider）：章标题自身以
+                # 'Part III: The Dance' 收尾时，裸分区词 'PART III' 会被包含
+                # 判重误并进该章——章被改名、真分区页消失（BAC ch14 实测；
+                # 与病例 022 的章分支同 kind 约束同构，此处补上 divider 侧）
+                if cur is not None and cur["kind"] == "divider" \
+                        and _similar(dkey, prev_unit_key):
                     # 相似分隔页（如 '权利变动' 与 '第四编'）→ 合并进当前单元
                     if len(dkey) > len(prev_unit_key) or _PARTITION_HINT.match(display):
                         cur["title"] = display

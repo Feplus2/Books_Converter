@@ -23,6 +23,7 @@ from openai import OpenAI
 import popo
 from popo import inference as pi
 from config import CHUNK_SIZE, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from llm_thinking import chat_create
 from stage2_common import finish_structure, save_structure  # noqa: F401  (re-export)
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,13 @@ def _deepseek_generate(client: OpenAI, prompt: str, system: str = "") -> str:
     last_err = None
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = client.chat.completions.create(
+            # 思考参数经 llm_thinking 协商（能关则关，恒思考模型取最低档，不拦模型）
+            resp = chat_create(
+                client,
                 model=DEEPSEEK_MODEL,
                 messages=messages,
                 max_tokens=8192,
                 temperature=0.1,
-                extra_body={"thinking": {"type": "disabled"}},
             )
             return resp.choices[0].message.content or ""
         except Exception as e:

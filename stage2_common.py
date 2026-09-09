@@ -27,6 +27,7 @@ from config import (
     DEEPSEEK_MODEL,
     GLOBAL_LEVEL_PASS,
 )
+from llm_thinking import chat_create
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,134 @@ def _page_texts(content_list: list) -> dict:
     return {p: "\n".join(t)[:_PAGE_CHARS] for p, t in pages.items()}
 
 
+# 目录页标题词（简/繁/间隔号/英文；归一化后精确全等才算，防正文提及误捕）
+_TOC_HEADING_WORDS = {"目录", "目錄", "contents", "content"}
+
+
+def _find_toc_page(pages: dict) -> int | None:
+    """本地探测目录页（1 起页码）：页内存在独立的目录标题短行即算。
+    只看前 60 页（目录几乎不可能更靠后；拿不准返回 None——不动作）。"""
+    for p in sorted(pages):
+        if p > 60:
+            break
+        if p < 3:
+            continue  # 封面/扉页不谈目录
+        for line in pages[p].split("\n"):
+            norm = re.sub(r"[\s　]+", "", line).strip().casefold()
+            if norm in _TOC_HEADING_WORDS:
+                return p
+    return None
+
+
+# ── 规则目录兜底提取（病例 029/030）──────────────────────────────
+# LLM 提取失败的两条现实路径：目录页被推荐序等前页推出采样窗（八次危机，
+# 扩窗已先行拦截）；端点内容过滤整单拒答（中國36問，GLM 1301——政治书目
+# 的目录条目本身就是敏感词表）。两路的共同点：目录页就在那儿、形态清晰。
+# 规则提取器只在 LLM 交付 0 条且本地探到目录页时启动——失败方向不动作
+# （提取为空则维持现状，与无目录书同路径）。
+
+# 条目尾：文字 + 点线/空白 + 1-4 位页码（'推荐序 001'、'一、从外资… 010'）
+_TOC_ENTRY_TAIL_RE = re.compile(r"^(.+?)[\s.·…．]*\s(\d{1,4})\s*$")
+# 作者行形态：'裴宜理 (Elizabeth J. Perry) 13'——页码属上一行条目（中國36問）
+_TOC_AUTHOR_TAIL_RE = re.compile(r"^[一-鿿·]{2,5}\s*[(（][A-Za-z]")
+# 行内作者剥除：'导论 宋怡明 (Michael Szonyi) 3' → '导论'
+_TOC_AUTHOR_INLINE_RE = re.compile(r"\s*[一-鿿·]{2,5}\s*[(（][A-Za-z].*$")
+# 待配对行的标题形状（'第X…'/'N.'/ '一、'/'（一）'/序导言类）
+_TOC_PENDING_RE = re.compile(
+    r"^(第\s*[一二三四五六七八九十百零〇0-9]+|\d{1,2}\s*[.、．]|[一二三四五六七八九十]+、"
+    r"|[（(][一二三四五六七八九十]+[）)]|导论|导言|引言|序|前言|后记|跋|附录)")
+
+
+def _rule_toc_level(text: str, has_chap: bool) -> int:
+    """按编号形状定级（形状栈后续还会校正相对深度，这里只给首票）"""
+    t = re.sub(r"\s+", "", text)
+    if re.match(r"^第[一二三四五六七八九十百零〇0-9]+(部分|[编篇卷部])", t):
+        return 1
+    if re.match(r"^(第)?[一二三四五六七八九十百零〇0-9]+章", t):
+        return 2
+    if re.match(r"^(推荐序|自序|序言|前言|序|导论|导言|引言|后记|跋|附录)", t):
+        return 1
+    if re.match(r"^\d{1,2}[.、．]", t):
+        return 3 if has_chap else 2
+    if re.match(r"^[一二三四五六七八九十]+、", t):
+        return 3
+    if re.match(r"^[（(][一二三四五六七八九十]+[）)]", t):
+        return 4
+    return 2
+
+
+def _rule_toc_extract(pages: dict, toc_page: int) -> list:
+    """从目录页区间规则提取条目。返回 toc_entries 同构列表（可能为空）。
+
+    区间：toc_page 起，连续有 ≥2 条目的页都收（目录跨页），一页 0 条即停；
+    全书上限 400 条（防失控）。无页码的部分/编/章/序类结构词条目以
+    page=None 收录（文本锚定不需要页码；'第 一 部 分 政 治' 这类间隔号
+    标题在目录里常不带页码）。
+    """
+    # 无页码也收的结构词形状（部分/编/章/序类；'N.'/'一、' 无页码不收——
+    # 可能是正文编号）
+    _struct_word = re.compile(
+        r"^(第\s*[一二三四五六七八九十百零〇0-9]+\s*(部分|[编篇卷部章])"
+        r"|推荐序|自序|序言|前言|序|导论|导言|引言|后记|跋|附录)")
+    entries = []
+    seen = set()
+
+    def _emit(head: str, page_no):
+        head = _TOC_AUTHOR_INLINE_RE.sub("", head).strip()
+        head = re.sub(r"[\s.·…．]+$", "", head).strip()
+        if len(re.sub(r"[\s　]+", "", head)) < 2 or len(head) > 60 \
+                or re.fullmatch(r"\d+", head):
+            return  # 太短/纯数字/超长段落都不是条目（介绍性段落混入目录页）
+        key = (_normalize_title(head), page_no)
+        if key in seen:
+            return
+        seen.add(key)
+        entries.append({"text": head, "level": 0, "page": page_no})
+
+    for p in range(toc_page, toc_page + 12):
+        if p not in pages:
+            if entries:
+                break
+            continue
+        page_entries_before = len(entries)
+        pending = None
+        for raw_line in pages[p].split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            norm = re.sub(r"[\s　]+", "", line).casefold()
+            if norm in _TOC_HEADING_WORDS or re.fullmatch(r"[0-9ivxlcdm]+", norm):
+                continue  # 目录标题行/页码行
+            m = _TOC_ENTRY_TAIL_RE.match(line)
+            if m and _TOC_AUTHOR_TAIL_RE.match(m.group(1)) and pending:
+                _emit(pending, int(m.group(2)))   # 作者行带页码：归上一行条目
+                pending = None
+            elif m:
+                if pending and _struct_word.match(pending):
+                    _emit(pending, None)          # 结构词条目无页码也收
+                _emit(m.group(1), int(m.group(2)))
+                pending = None
+            elif _TOC_PENDING_RE.match(line):
+                if pending and _struct_word.match(pending):
+                    _emit(pending, None)
+                pending = line      # 无页码的条目前半行，等下一行的页码
+            else:
+                if pending and _struct_word.match(pending):
+                    _emit(pending, None)
+                pending = None
+            if len(entries) >= 400:
+                break
+        if pending and _struct_word.match(pending):
+            _emit(pending, None)
+        if len(entries) == page_entries_before and entries:
+            break  # 一页 0 条 = 目录区间结束
+    has_chap = any(re.match(r"^第?\s*[一二三四五六七八九十百零〇0-9]+\s*章",
+                            re.sub(r"\s+", "", e["text"])) for e in entries)
+    for e in entries:
+        e["level"] = _rule_toc_level(e["text"], has_chap)
+    return entries
+
+
 def _clean_json_response(raw: str) -> str:
     m = re.search(r"```json\s*(.*?)\s*```", raw, re.DOTALL)
     if m:
@@ -206,6 +335,16 @@ def _light_metadata_pass(content_list: list, book_name: str,
 
     max_page = max(pages)
     front = sorted(p for p in pages if p <= _FRONT_PAGES)
+    # 采样扩窗（病例 029）：推荐序/自序/概念提示把目录推出前 15 页时
+    # （八次危机目录在 P23-31），LLM 按规则只能输出 []——本地探测到目录页
+    # 超出采样窗就扩窗覆盖（目录页及其后 8 页；目录可能跨页）。失败方向：
+    # 探测不到目录页则维持原窗，与旧行为一致。
+    toc_page = _find_toc_page(pages)
+    if toc_page is not None and toc_page + 8 > _FRONT_PAGES:
+        extended = sorted(p for p in pages if p <= toc_page + 8)
+        if len(extended) > len(front):
+            logger.info(f"  目录页在 P{toc_page}，采样窗扩至 {toc_page + 8} 页")
+            front = extended
     back = sorted(p for p in pages if p > max_page - _BACK_PAGES and p not in front)
 
     sample_parts = [f"[P{p}]\n{pages[p]}" for p in front]
@@ -224,12 +363,12 @@ def _light_metadata_pass(content_list: list, book_name: str,
     logger.info(f"  DeepSeek 轻量兜底: 采样 {len(front)}+{len(back)} 页, {len(sample):,} 字符")
 
     def _call(prompt: str) -> str:
-        resp = client.chat.completions.create(
+        resp = chat_create(
+            client,
             model=DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=8192,
             temperature=0.1,
-            extra_body={"thinking": {"type": "disabled"}},
         )
         return resp.choices[0].message.content
 
@@ -315,18 +454,43 @@ def _parse_toc_array(data) -> list:
 _SUP_MARK_RE = re.compile(r"\$\^\{[^{}]*\}\$")
 _DECOR_PREFIX_RE = re.compile(r"^[—–-]\s*[IVXLCDM]+\.?\s*[—–-]\s*", re.I)
 
+# LaTeX 命令 → Unicode（病例 024，锚点归一化用；长的在前防前缀截胡）
+_LATEX_SYMBOL_MAP = (
+    ("\\longrightarrow", "→"), ("\\rightarrow", "→"), ("\\leftarrow", "←"),
+    ("\\Rightarrow", "⇒"), ("\\times", "×"), ("\\cdot", "·"),
+    ("\\pm", "±"), ("\\mp", "∓"), ("\\to", "→"), ("\\infty", "∞"),
+    ("\\alpha", "α"), ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
+    ("\\epsilon", "ε"), ("\\zeta", "ζ"), ("\\eta", "η"), ("\\theta", "θ"),
+    ("\\lambda", "λ"), ("\\mu", "μ"), ("\\nu", "ν"), ("\\xi", "ξ"),
+    ("\\pi", "π"), ("\\rho", "ρ"), ("\\sigma", "σ"), ("\\tau", "τ"),
+    ("\\phi", "φ"), ("\\chi", "χ"), ("\\psi", "ψ"), ("\\omega", "ω"),
+    ("\\Lambda", "Λ"), ("\\Sigma", "Σ"), ("\\Phi", "Φ"), ("\\Omega", "Ω"),
+)
+
 
 def _normalize_title(text: str) -> str:
     """标题归一化：剥脚注上标/装饰前缀 + 去 $ 定界符和所有空白 + 大小写折叠，
     用于目录条目匹配。'$' 是数学定界符，目录与正文的公式块常差一层 $$
     包裹（'一、$f(x)=..$型' vs '$$ 一、f(x)=.. 型 $$'），剥掉才对齐。
     （'FOREWORD' 应能匹配 'Foreword: François Ewald …' 前缀；
-    中文无大小写，不受影响）"""
+    中文无大小写，不受影响）
+
+    LaTeX 命令与上下标归一（病例 024）：目录 OCR 与正文公式形态系统性差异
+    （'$W^{\\pm}$' ↔ 'W±'、'$SU(3)$' ↔ 'SU(3)'、'$K^{0}\\rightarrow\\pi^{-}$'
+    的上标/命令在目录侧是 Unicode 字符）。两侧同归一，非公式文本不受影响。"""
     t = _SUP_MARK_RE.sub("", text or "")
     t = _DECOR_PREFIX_RE.sub("", t.strip())
+    # HTML 标签剥除（病例 031：文字版 PDF 的文本层把冒号包成 <sub>：</sub>
+    # 混进标题——'第二章 土耳其<sub>：</sub>地缘…' vs 目录 '第二章 土耳其：地缘…'）
+    t = re.sub(r"<[^>]+>", "", t)
     t = t.replace("$", "")
     # LaTeX 格式命令是纯排版噪声（目录与正文常不一致）
     t = t.replace("\\left", "").replace("\\right", "")
+    for cmd, uni in _LATEX_SYMBOL_MAP:
+        t = t.replace(cmd, uni)
+    t = re.sub(r"\\([A-Za-z]+)", r"\1", t)  # 未收录命令保留字母主体
+    t = re.sub(r"[{}]", "", t)               # 分组括号无上位含义
+    t = t.replace("^", "").replace("_", "")  # 上下标标记（'w^{±}'→'w±'）
     # 弯引号/弯撇号统一为直引（OCR 与目录常不一致）
     t = (t.replace("’", "'").replace("‘", "'")
            .replace("“", '"').replace("”", '"'))
@@ -401,13 +565,20 @@ _JUNK_BOOKMARK_RE = re.compile(r"[/／]\s*\d+\s*$")
 
 
 def _sanitize_pdf_toc(pdf_toc: list) -> list:
-    """PDF 书签先验清洗：识别并拒收'标题／页码'平级假目录。
+    """PDF 书签先验清洗：识别并拒收'标题／页码'平级假目录与页码书签洪水。
 
     扫描本的自制书签常把印刷页码粘在标题里（'第一章 函数与极限／1'）且
     level 全平——这不是结构真值：采用后页码会经锚点富化（b[content]=m[2]）
     粘进正文标题，全平层级把目录压成一条一章（病例019 高等数学实测
     193/198 条命中，目录 72 条碎成 191 条）。≥80% 条目带页码尾巴即整体
     丢弃，回退 LLM 目录提取（伪造指纹兜底仍生效）；零散尾巴逐条剥除。
+
+    页码书签洪水（病例 025 续·汉语语义学）：另一类扫描本自制书签把每个
+    正文页的**页码本身**录成一条书签（'1'、'2'…'101'，432/436 条纯数字）。
+    短数字串不在旧的 ≥6 位长串拒收范围内，漏网后经位置锚定把'前言'锁成
+    唯一 L1 锚点，179 个无编号标题（含全部章题）被下沉压成 前言>平铺 L2。
+    纯数字条目任何长度一律拒收（目录里不存在纯数字真标题）；≥80% 纯数字
+    即整体丢弃。失败方向=回退 LLM 目录/形状栈，与无书签书同路径，不更差。
     """
     if not pdf_toc:
         return []
@@ -419,14 +590,21 @@ def _sanitize_pdf_toc(pdf_toc: list) -> list:
             f"  PDF 书签疑似'标题／页码'假目录（{n_junk}/{n} 条带页码尾巴），"
             f"丢弃 outline 先验，回退 LLM 目录提取")
         return []
+    n_digit = sum(1 for e in pdf_toc
+                  if re.fullmatch(r"\d+", ((e or {}).get("text") or "").strip()))
+    if n >= 5 and n_digit >= 0.8 * n:
+        logger.warning(
+            f"  PDF 书签疑似页码书签洪水（{n_digit}/{n} 条纯数字条目），"
+            f"丢弃 outline 先验，回退 LLM 目录提取")
+        return []
     out = []
     for e in pdf_toc:
         text = _JUNK_BOOKMARK_RE.sub("", (e.get("text") or "").strip()).strip()
         if not text:
             continue
-        # 纯数字长串条目（ISBN '9781107017108' 之类）无结构信息，拒收——
-        # 否则会经页码救援在封面页合成幻影标题（病例 022）
-        if re.fullmatch(r"\d{6,}", text):
+        # 纯数字条目（ISBN 长串、页码书签）无结构信息，拒收——否则会经
+        # 页码救援/位置锚定合成幻影标题或毒化锚点表（病例 022 / 病例 025 续）
+        if re.fullmatch(r"\d+", text):
             continue
         out.append({**e, "text": text})
     return out
@@ -508,6 +686,7 @@ def _match_anchor(text: str, anchors: list):
     prefix_best = None
     suffix_best = None
     long_prefix_best = None
+    long_suffix_best = None
     for a in anchors:
         k, lv = a[0], a[1]
         if k == key or (alt_key != key and k == alt_key):
@@ -529,12 +708,21 @@ def _match_anchor(text: str, anchors: list):
             # '9.2.1 Kauzmann paradox'；限长锚点防 '1.1' 误配 '1.1.2'）
             if long_prefix_best is None or len(k) > len(long_prefix_best[0]):
                 long_prefix_best = (k, a)
+        elif len(k) >= 8 and key.endswith(k) and len(key) > len(k) \
+                and key[: len(key) - len(k)].endswith((":", "：")):
+            # 锚点是块的尾部，块多一个冒号标签前缀（'Complement: Isospin
+            # and flavor SU(3)' ↔ 目录 'Isospin and flavor SU(3)'，病例 024）；
+            # 冒号限定防过匹配（裸后缀会把 '绪论' 错配到 '附录：绪论'），取最长
+            if long_suffix_best is None or len(k) > len(long_suffix_best[0]):
+                long_suffix_best = (k, a)
     if prefix_best is not None:
         return prefix_best[1]
     if suffix_best is not None:
         return suffix_best[1]
     if long_prefix_best is not None:
         return long_prefix_best[1]
+    if long_suffix_best is not None:
+        return long_suffix_best[1]
     # 块是锚点的子串（副标题被 OCR 截断，如"…——当代新"缺尾字）；
     # 限长块防"权利主体"式短块错配，取最短包含锚点（最具体）。
     # 覆盖率闸门：块须覆盖锚点 ≥40%——单个英文词也能混过 8 字符下限
@@ -658,7 +846,10 @@ def _calibrate_levels(blocks: list, toc_entries: list,
             continue
         text = (b.get("content") or "").strip()
         key = _normalize_title(text)
-        if not key or len(key) > 64:
+        # 长度上限只挡非标题块：引擎已标 title 的块有视觉证据（闸门同理不套
+        # 位置约束）——多行 ALL-CAPS 超长章题（BAC ch12，归一化 105 字符）
+        # 曾被 64 上限漏过，锚点在手也拿不到 level
+        if not key or (len(key) > 64 and b.get("type") != "title"):
             continue
         m = _match_anchor(text, anchors)
         if m is None:
@@ -1868,13 +2059,13 @@ def _global_level_pass(blocks: list, book_name: str) -> int:
 
     try:
         client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-        resp = client.chat.completions.create(
+        resp = chat_create(
+            client,
             model=DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": _GLOBAL_LEVEL_PROMPT.format(
                 book=book_name, table="\n".join(lines))}],
             max_tokens=8192,
             temperature=0.1,
-            extra_body={"thinking": {"type": "disabled"}},
         )
         data = json.loads(_clean_json_array_response(
             resp.choices[0].message.content or ""))
@@ -1890,6 +2081,104 @@ def _global_level_pass(blocks: list, book_name: str) -> int:
     return n
 
 
+# ── 前后页条目词表锚定（病例 028）──────────────────────────────
+# outline 先验弃用后，'前言/序/版权页/后记' 这类几乎每本书都有、印刷目录又常
+# 不收的条目由词表规则锚定：归一化全等（或 词表词+括号署名，'前言（贾彦德）'）
+# 且处于前/后页区即锁 L1。词表刻意保守——导言/Introduction/附录/参考文献/
+# 目录 是结构标题或自指条目，不在此列（铁律 0：拿不准就不动作）。
+
+_FRONT_LEXICON_CN = (
+    "前言", "序言", "序章", "序", "前记", "再版前言", "再版前记", "自序",
+    "原版前言", "初版前言", "修订版前言", "作者简介", "作者介绍",
+    "版权页", "版权信息", "版权", "扉页", "献词", "致谢", "鸣谢",
+    "凡例", "出版说明", "编者的话", "内容提要", "内容简介",
+)
+_BACK_LEXICON_CN = (
+    "后记", "跋", "出版后记", "再版后记", "致谢", "鸣谢", "作者简介", "作者介绍",
+)
+_FRONT_LEXICON_EN = (
+    "foreword", "preface", "prologue", "acknowledgments", "acknowledgements",
+    "about the author", "copyright", "copyright page", "dedication",
+)
+_BACK_LEXICON_EN = (
+    "epilogue", "afterword", "acknowledgments", "acknowledgements",
+    "about the author",
+)
+
+
+def _fm_lexicon_zone(blocks: list) -> tuple[int, int]:
+    """前/后页区边界（扫描页码）：首个/末个章节编号形状（第X章/Chapter N）
+    标题块的页码；无章号书回退 前 25 页 / 全书 80% 处（词表条目本就出现在头尾）。"""
+    chap_pages = [b.get("page", 0) for b in blocks
+                  if b.get("type") == "title"
+                  and _title_shape((b.get("content") or "").strip()) in ("chap_cn", "chap_en")]
+    max_page = max((b.get("page", 0) for b in blocks), default=0)
+    front_end = min(chap_pages) if chap_pages else 25
+    back_start = max(chap_pages) if chap_pages else int(max_page * 0.8)
+    return front_end, back_start
+
+
+def _fm_lexicon_match(text: str, front: bool) -> bool:
+    """词表命中判定：归一化全等，或 '词表词+括号署名'（'前言（贾彦德）'）。
+    空串/超 25 字符的块不收（真词表条目都是短行）。"""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 25:
+        return False
+    norm = _normalize_title(raw)
+    if not norm:
+        return False
+    lexicon = (_FRONT_LEXICON_CN + _FRONT_LEXICON_EN) if front \
+        else (_BACK_LEXICON_CN + _BACK_LEXICON_EN)
+    for w in lexicon:
+        wn = _normalize_title(w)
+        if norm == wn:
+            return True
+        if re.fullmatch(re.escape(wn) + r"[（(].*[）)]", norm):
+            return True
+    return False
+
+
+def _anchor_frontmatter_lexicon(blocks: list, toc_pages: set | None = None) -> int:
+    """前后页词表锚定：命中的块锁 L1；text 块（引擎丢 text_level 的形态）晋升 title。
+
+    词表命中本身就是强证据，不依赖目录条目。在全部层级校正之后调用
+    （下沉/全局定级不再覆盖）。失败方向=不动作：
+    - 不在词表/不在页区一律不碰；
+    - 目录页上的"条目罗列行"不碰（toc_pages 跳过）；
+    - 同页 ≥2 个词表命中整页跳过（真实前/后页一页一条；一页多条 = 目录页
+    //罗列形态——BAC 实测：Contents 页把 Dedication/Acknowledgments/About
+    the Author 同时列出，词表逐个命中会锚出幻影条目）。
+    """
+    front_end, back_start = _fm_lexicon_zone(blocks)
+    toc_pages = toc_pages or set()
+    hits: list[tuple[dict, bool]] = []
+    for b in blocks:
+        if b.get("type") not in ("title", "text"):
+            continue
+        page = b.get("page", 0)
+        if page in toc_pages:
+            continue
+        text = (b.get("content") or "").strip()
+        if page <= front_end and _fm_lexicon_match(text, front=True):
+            hits.append((b, True))
+        elif page >= back_start and _fm_lexicon_match(text, front=False):
+            hits.append((b, False))
+    from collections import Counter as _Counter
+    page_hits = _Counter(b.get("page", 0) for b, _ in hits)
+    n = 0
+    for b, _front in hits:
+        if page_hits[b.get("page", 0)] >= 2:
+            continue  # 同页多条命中 = 罗列页形态，整页不动作
+        b["type"] = "title"
+        if b.get("level", -1) != 1:
+            b["level"] = 1
+        b["_fm_rule"] = True
+        n += 1
+    if n:
+        logger.info(f"  前后页词表锚定: {n} 个条目锁 L1（前言/序/版权页/后记等）")
+    return n
+
+
 def finish_structure(blocks: list, content_list: list, book_name: str,
                      work_dir: str, engine: str, progress=None,
                      pdf_toc: list | None = None) -> dict:
@@ -1897,6 +2186,9 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
 
     pdf_toc: PDF outline/书签转成的 toc_entries（确定性元数据，born-digital
     PDF 的免费真值），非空时取代 LLM 提取的目录作为最高优先级先验。
+    ⚠️ 病例 028 起 outline 先验已弃用（pipeline 恒传 None；扫描本第三方书签
+    形态不可控——页码书签洪水/泛名条目/假目录三连事故），只信 OCR 重建目录
+    + 前后页词表锚定。此参数与 _sanitize_pdf_toc 等链路保留备查。
     """
     _report = progress or (lambda *a, **kw: None)
     work_dir = Path(work_dir)
@@ -1930,6 +2222,19 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
         logger.info(f"  PDF outline 先验: {len(pdf_toc)} 条书签目录"
                     f"（取代 LLM toc_entries）")
         light["toc_entries"] = pdf_toc
+
+    # ── 规则目录兜底（病例 029/030）：LLM 交付 0 条但本地探到目录页 →
+    # 从目录页规则提取（采样未覆盖的残余漏网 + 端点内容过滤拒答的最后一道网；
+    # 只在"LLM 空手"时启动，失败方向=不动作，与无目录书同路径） ──
+    if not light.get("toc_entries"):
+        _pages_map = _page_texts(content_list)
+        _toc_p = _find_toc_page(_pages_map)
+        if _toc_p is not None:
+            rule_entries = _rule_toc_extract(_pages_map, _toc_p)
+            if rule_entries:
+                logger.info(f"  规则目录兜底: LLM 提取为空，"
+                            f"规则从 P{_toc_p} 起提取 {len(rule_entries)} 条")
+                light["toc_entries"] = rule_entries
 
     # 目录页码修复（页码与条目分离的版式下 LLM 页码不可信，按 y 对齐重配）
     light["toc_entries"], toc_pages = _repair_toc_pages(
@@ -1996,6 +2301,11 @@ def finish_structure(blocks: list, content_list: list, book_name: str,
     if GLOBAL_LEVEL_PASS:
         _report("LLM 全局一致性定级...")
         _global_level_pass(blocks, book_name)
+
+    # ── 前后页词表锚定（病例 028：前言/序/版权页/后记等，outline 弃用后
+    # 的免费真值；最后执行，层级不再被任何后续机制覆盖。目录页跳过——
+    # 词表条目在目录页上是罗列行不是标题；toc_pages 此处为 0 起页码） ──
+    _anchor_frontmatter_lexicon(blocks, toc_pages={p + 1 for p in toc_pages})
 
     blocks_path = work_dir / "popo_blocks.json"
     with open(blocks_path, "w", encoding="utf-8") as f:
