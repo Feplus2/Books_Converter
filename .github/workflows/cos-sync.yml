@@ -27,6 +27,23 @@ jobs:
         run: |
           set -e
           mkdir -p assets
+          # publish 事件与产物上传存在竞速：发布瞬间产物可能还没传完
+          # （Books_Converter v1.3.4/v1.3.8 两次失败即此因——"no assets to download"）。
+          # 轮询已传完（state=uploaded）的资产数，>0 且连续三轮稳定（约 60s 无新增）才下载，
+          # 上限 15 分钟；下到部分产物会让 Prune 把未传完的包从 COS 误删
+          prev=-1; stable=0
+          for i in $(seq 1 30); do
+            count=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '[.assets[] | select(.state=="uploaded")] | length' || echo 0)
+            echo "uploaded assets: $count (第 $i 轮)"
+            if [ "$count" -gt 0 ] && [ "$count" = "$prev" ]; then
+              stable=$((stable+1))
+              [ "$stable" -ge 2 ] && break
+            else
+              stable=0
+            fi
+            prev=$count
+            sleep 30
+          done
           gh release download "$TAG" --repo "${{ github.repository }}" --dir assets
           # 只要安装包本体：剔除签名/更新清单/校验类小文件（官网 countable 同口径）
           rm -f assets/*.sig assets/*.json assets/*.blockmap assets/*.txt
