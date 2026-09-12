@@ -667,6 +667,22 @@ def _build_anchors(toc_entries: list) -> list:
     return anchors
 
 
+# 尾部匹配的通用小节名词表（病例 034 幻影挂账，用户批准修复）：
+# 'Exercises' 单个通用词尾配 '12 Solutions to exercises' → 幻影章。
+# 这些词只许精确命中，不得做锚点尾部；'RUN'/'The Dance' 等专名不受影响。
+_GENERIC_TAIL_WORDS = frozenset({
+    "exercise", "exercises", "summary", "introduction", "conclusion",
+    "conclusions", "overview", "notes", "problem", "problems", "solution",
+    "solutions", "example", "examples", "remark", "remarks", "appendix",
+    "index", "references", "bibliography",
+})
+
+
+def _is_generic_tail_word(key: str) -> bool:
+    """块是否单个通用小节名（已归一化 casefold）——是则禁止锚点尾部匹配。"""
+    return key.isalpha() and key in _GENERIC_TAIL_WORDS
+
+
 def _match_anchor(text: str, anchors: list):
     """归一化匹配锚点：精确 > 块是锚点前缀 > 块是锚点尾部（分隔页模式）
     > 有界编辑距离（容忍 OCR 单字差异）。
@@ -698,7 +714,8 @@ def _match_anchor(text: str, anchors: list):
             # 块是锚点的前缀（"第一章" → "第一章 民法概念论"），取最长
             if prefix_best is None or len(k) > len(prefix_best[0]):
                 prefix_best = (k, a)
-        elif len(key) >= 3 and k.endswith(key) and len(k) > len(key):
+        elif len(key) >= 3 and k.endswith(key) and len(k) > len(key) \
+                and not _is_generic_tail_word(key):
             # 块是锚点的尾部（"权利主体" → "第二编 权利主体"、
             # "RUN" → "Chapter 1: Run"），取最短
             if suffix_best is None or len(k) < len(suffix_best[0]):
@@ -728,7 +745,7 @@ def _match_anchor(text: str, anchors: list):
     # 覆盖率闸门：块须覆盖锚点 ≥40%——单个英文词也能混过 8 字符下限
     # （病例 Feeling Great：quiz 表头 'Depression' 10 字符子串命中 41 字符的
     # 分区条目 'I. How to Turn Depression and Anxiety into Joy' → 幻影 L1）
-    if len(key) >= 8:
+    if len(key) >= 8 and not _is_generic_tail_word(key):
         sub_best = None
         for a in anchors:
             k = a[0]

@@ -938,3 +938,145 @@
   （`<[^>]+>`）——两侧同归一，非标签文本不受影响。
 - **回归**：test_stage2_toc 61/61（+1 例）；本书真跑验证见 git log。
 - **状态**：全部已修复并验证（sidecar v1.3.9）。
+
+## 病例 032｜民法总论 / VLM 引擎 × stage3 — 裸圈码脚注永不锚定（isalnum 陷阱）
+
+- **现象**：VLM 引擎真书回归，EPUB 章末尾注正常渲染（内容不丢），但
+  正文 noteref 链接 0 条（MinerU 版同书 1736 条）。
+- **根因链**：stage3 `claim_footnotes` 的裸匹配守卫写作"非字母数字的圈码
+  才退化裸匹配"，实现用 `not mark[0].isalnum()`——但 ① 的 Unicode 类别是
+  数字（No），`isalnum()` 判 **True** → 裸圈码永远进不了裸匹配分支。
+  MinerU 内容因正文圈码走 `$^{①}$` 上标约定（`_convert_latex_sup` →
+  `<sup>①</sup>`），从不触发该分支，bug 潜伏多年未暴露；VLM 引擎正文
+  直接产裸圈码（①），全灭。
+- **修补**（双管齐下）：
+  - stage3_epub.py `claim_footnotes`：守卫改
+    `not (mark[0].isascii() and mark[0].isalnum())`——圈码等 Unicode 数字
+    可以裸匹配；ASCII 字母/数字仍只认上标（原意不变，防误伤正文）。
+  - stage1_vlm.py `_wrap_page_markers`（适配器层）：正文圈码中**本页确有
+    对应脚注**的包成 `$^{①}$` 契约约定形态；无对应注文的圈码保持裸字
+    （内联列举场景，失败方向=不动作）。
+- **回归**：新测试 tests/test_stage3_footnote.py（裸圈码锚定 / ASCII 数字
+  不裸匹配 / $^{①}$ 不破）+ tests/test_stage1_vlm.py 加包标用例；
+  全链 8 个测试文件绿；民法总论重出 EPUB：noteref 952 / 尾注 476
+  （超 MinerU 版的 434），QC 红牌 0。
+- **状态**：已修复并验证。
+
+## 病例 033｜民法总论 / VLM 引擎 × stage3 — 同页新开章/节冲掉脚注锚定
+
+- **现象**：用户亲读 EPUB 发现大量脚注只进章末尾注、正文无 noteref 链接
+  ——集中在"页中新开章/节"的位置。
+- **根因链**：`flush_footnotes` 在每个标题块处按 `page ≤ last_page` 冲走
+  全部未锚定脚注；同页脚注的锚点标记在本页后段的正文块里才出现，标题
+  先把脚注冲走（标记 claimed）→ 后段正文处理时锚定失败。MinerU 引擎同
+  理存在（874+ 脚注仅 434 锚定的部分根因）。
+- **修补**（stage3_epub.py `flush_footnotes(before_page)`）：标题处只冲
+  该页**之前**的脚注，同页脚注留给本页后段锚定；全书收尾的 final flush
+  仍全部冲走（内容永不丢）。
+- **同案修补**（stage1_vlm.py `_demote_running_heads`，用户同读发现的
+  页眉泄漏）：GLM 偶发把书眉塞进正文块（'012 民法总论'），污染正文且
+  截断跨页合并；页首"数字页码+书眉候选"短块降级为 header（候选=高频
+  running_head ∪ 目录 L1/L2 条目；无页码章题豁免，失败方向=不动作）。
+- **回归**：tests/test_stage3_footnote 新增同页标题不提前冲脚注例；
+  tests/test_stage1_vlm 新增页眉降级 5 例；全链 9 文件绿；
+  民法总论重出 EPUB 验证（见 NOTES）。
+- **状态**：已修复并验证。
+
+## 病例 034｜QFT / VLM 引擎 × 目录区检测 — 章首 mini-TOC 吞掉 ch1-3（含挂账）
+
+- **现象**：QFT（物理书，每章章首带 mini-TOC）VLM 全程，EPUB 的 nav 里
+  第 1-3 章凭空消失，第 7/8 章节标题带 "… 180" 页码残渣。
+- **根因链**：模型把章首 mini-TOC 行判为 toc 块 → 引擎按目录契约形态
+  （条目+尾页码）输出 → stage2 目录区检测把目录区判定为 p6-59（含章首
+  mini-TOC）→ front_matter toc keep=false → body_range 从 p60 开始 →
+  ch1-3 标题与正文被整段排除（EPUB 静默丢 43 页）。
+- **修补**（stage1_vlm.py，适配器层，只动文本形态）：
+  - `_toc_region_pages`：真目录区 = ≥3 toc 块的连续页组且条目最多（≥5 条）；
+    区域内 toc 块保留 MinerU 契约形态；区域外（章首 mini-TOC/误判）降级
+    为普通正文并剥点线页码（`_strip_page_suffix`，同样用于标题块）。
+- **回归**：tests/test_stage1_vlm 新增区域判定/降级 e2e 共 3 例；全链 9
+  文件绿；QFT 重产：nav 恢复 ch1-3 与全书嵌套、页码残渣清零、anchor
+  112/112、missing_real 0；民法总论区域判定不受影响（简目+详目连续组）。
+- **状态**：已修复并验证。
+
+### 挂账：'12 Solutions to exercises' 幻影章（stage2 锚点尾匹配，两引擎共性）
+
+- **现象**：QFT nav 在 ch1 与 ch2 之间多出顶层章 '12 Solutions to exercises'。
+- **根因链（已定位）**：ch1 末尾的合法小节标题块 'Exercises' 命中锚点匹配
+  规则 3（块是锚点尾部，分隔页模式）→ 被锚点富化改写为
+  '12 Solutions to exercises' 并锁 L1（锚定即锁死，后续流程全部豁免）；
+  位置闸门因"引擎已标标题豁免"未拦（VLM 把 Exercises 标为 text_level 标题）。
+  真章 '12 Solutions to exercises'（p282，header 首现）未被晋升，幻影独占。
+- **影响面**：锚点规则 3 的尾部匹配对通用单字/单词尾过宽——'Exercises'、
+  'Summary' 类通用小节名在任何含 'X … to exercises/summary' 目录条目的书里
+  都可能被尾配。MinerU 引擎同病（本例未显形纯属运气）。
+- **修补建议（待用户批准，属锚点核心语义改动）**：规则 3 加窄守卫——
+  块为锚点尾部时，要求块长 ≥8 字符或 ≥2 词，或要求块同时是锚点的
+  ≥40% 覆盖（与规则 5 同口径）；回归须覆盖 BAC/必须保卫社会分隔页场景。
+- **状态**：挂账待决。
+
+## 病例 034 追记（同日深夜第二轮，QFT 用户亲读反馈）
+
+- **公式纪律**（灾难级，用户判定）：VLM 引擎 prompt 从未约束公式形态 →
+  模型把公式写成 Unicode 平铺（√ 而非 \sqrt{}），全文仅 187 个 <math>
+  （规则引擎版 7416）。修补：_PAGE_PROMPT 加铁律 7（行内 $…$、display
+  $$…$$ + \qquad（编号）、禁 Unicode 平铺）。重读后 <math> 8576、display
+  block 1493，**反超规则版**；阅读器实拍确认 display 公式居中+编号右置。
+- **mini-TOC 丢弃守卫修正**：④"下游有真标题"初版只认更后**页**，QFT 实态
+  是章首页 mini-TOC 与真节标题同页并存 → 条件改为更后页**或本页更后块位**；
+  且**只丢 toc 型行，title 型永不丢**（防真标题被自身副本证据误杀）。
+- **裸编号章题合并**（_merge_bare_number_titles）：模型把章题拆成
+  '7' + 'Quantum electrodynamics' 两块，裸 '7' 成幻影孤儿空章 → 页内紧邻
+  双 title 块合并（仅 ^\d{1,3}$/^第…[编章]$ 形态，余者不动作）。
+- **回归**：test_stage1_vlm 17 例（新增丢弃同页形态/合并守卫/拆分归一）；
+  QFT 重发 QC **全绿**（空章 6→0、孤儿 0、锚 110/110、missing 0）。
+- **残留挂账（小）**：'3.1 The action principle where L is called…' 行内
+  连排一处——页眉首现块被 stage2 锚点晋升为 text 后与正文段合并（规则层
+  既有行为，MinerU 同构）；Fig 5.3 占位符与图 5.4 同页并存（配对边界）。
+  幻影章（尾匹配）挂账维持待决。
+
+## 病例 034 第二追记（幻影修复落地 + 公式清洗链 + bbox 回退 + 书眉守卫）
+
+- **幻影章修复（用户批准）**：`_match_anchor` 通用小节名词表守卫
+  （`_is_generic_tail_word`：exercises/summary/introduction…）同时罩住
+  尾部匹配（规则 3）与子串匹配（规则 5）——实测幻影走的是规则 5
+  （9/22=40.9% 刚踩过 40% 覆盖闸），初修只罩规则 3 无效，双路后幻影消失、
+  真 ch12 成形（12.1-12.5 小节齐全）。回归 test_stage2_toc 62/62
+  （含 RUN/权利主体 等专名尾部匹配保留例）。
+- **公式清洗链（stage3_epub，两引擎共享受益）**：
+  `_strip_alignment_amp`（剥对齐 &——'\&'换行+对位同样要剥，保护符只罩
+  前非反斜杠的 \&；latex2mathml 会把对齐 & 渲染成可见字符，5.46 实测）；
+  `_sanitize_latex`（模型笔误窄守卫：\qqud→\qquad；单参数命令粘连字母
+  补花括号 \slashedp→\slashed{p}，\hbar 等固有命令不误伤）。
+  回归 test_stage3_footnote（剥 & 四例 + 笔误五例）。
+- **游离公式编号归位（stage1_vlm `_fix_dangling_eq_numbers`）**：
+  '\qqud(3.47)' 裸源码/块首裸编号紧贴下文 → 并入 $$ 内（\qquad 规范间距）；
+  编号限定 (章.序号) 带点形式，'(1) 第一点' 列表标记不吃。
+- **bbox 定位回退链**：doubao 对个别页输出裸数组/絮语（want_json 三次
+  解析失败）→ `_detect_boxes` 宽容解析（{"images":[]}/裸数组/单框），
+  主定位失败自动回退转写模型（glm 同页可解）——Fig 5.3 掉图修复。
+- **书眉混正文守卫（`_head_is_running`）**：书眉==当前章题且 printed_page
+  已深入章节内部（> 条目印刷页）→ 不再发射 header 块（防 popo 首现规则
+  复活进正文再被锚点晋升，'3.1 … where L…' 连排消失）；章首页书眉
+  （≤ 条目页，病例 004 晋升通道）与页码缺失一律保留。
+- **全链 9 测试文件绿；QFT 终验：幻影 0、可见 & 0、\qqud 0、slashedp 0、
+  连排 0、Fig 5.3/5.5/5.6 图齐；QC 全绿。**
+
+## 病例 035｜Feeling Great / VLM 引擎 — 表格结构全失（markdown pipe + table_body 契约）
+
+- **现象**：表格书真书回归，EPUB 的 HTML <table> 数为 0——quiz 表格
+  （Part 1: Your Moods 等 195 处，MinerU 真值）全被逐行摊平成文本。
+- **根因链**：生产 prompt 未定义表格输出形态（"表格文字尽量按行转写"是
+  实验版口径残留）；且契约字段 mismatch——popo/convert.py 读
+  `table_body`，初版发射 `text` 字段导致二次归零（第一修仍 0 张）。
+- **修补**（stage1_vlm.py）：
+  - prompt 增表格纪律：`{"t":"table","caption":…,"text":"markdown pipe
+    表格（| 列 |…，首行表头、次行 |---| 分隔）"}`；
+  - `_table_md_to_html`：pipe → 良构 HTML（单元格全转义、列数自动补齐），
+    解析失败回退普通文本块（内容不丢）；
+  - 契约发射 `{"type":"table","table_body":html}`（对齐 MinerU 字段）。
+- **回归**：test_stage1_vlm 新增 pipe 转换 4 例；FG 表格页重读 146 页
+  （按 MinerU 真值页表定点删页重读，断点续跑机制复用）后 EPUB
+  <table>=164；抽查 Part 1 quiz 表 thead/tbody 结构完整。
+- **状态**：已修复并验证。残留黄牌（orphan 48/空章 21/重复 3）为
+  Feeling Great 章级目录固有形态，挂账观察。

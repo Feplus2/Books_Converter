@@ -100,6 +100,34 @@ def test_anchor_math_delimiters_and_quotes():
     assert m3 is not None and m3[1] == 1
 
 
+def test_anchor_generic_tail_word_blocked():
+    """幻影章守卫（病例 034，用户批准）：单个通用小节名不得走尾部匹配——
+    'Exercises' 不得尾配 '12 Solutions to exercises'；
+    但 'RUN'→'Chapter 1: Run'、'权利主体'→'第二编 权利主体' 等专名尾部匹配保留；
+    通用词精确命中不受影响。"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "12 Solutions to exercises", "level": 1, "page": 266},
+        {"text": "Chapter 1: Run", "level": 1, "page": 9},
+        {"text": "第二编 权利主体", "level": 1, "page": 89},
+        {"text": "Exercises", "level": 2, "page": 41},
+    ])
+    # 幻影场景：单个通用词尾配长条目 → 拒绝（只剩同名的精确命中 page 41）
+    m0 = _match_anchor("Exercises", anchors)
+    assert m0 is not None and m0[3] == 41, f"通用词不得尾配长条目: {m0}"
+    # 无同名精确命中时：尾配/子串双路都被拒 → None
+    anchors_only12 = _build_anchors([{"text": "12 Solutions to exercises", "level": 1, "page": 266}])
+    assert _match_anchor("Exercises", anchors_only12) is None
+    # 专名尾部匹配保留
+    m = _match_anchor("RUN", anchors)
+    assert m is not None and m[3] == 9
+    m2 = _match_anchor("权利主体", anchors)
+    assert m2 is not None and m2[3] == 89
+    # 通用词精确命中（rule 1）不受影响
+    m3 = _match_anchor("Exercises", _build_anchors([{"text": "Exercises", "level": 2, "page": 41}]))
+    assert m3 is not None and m3[3] == 41
+
+
 def test_anchor_fuzzy_short_key():
     """系列守卫：'答学友问1' 不得模糊命中 '答学友问'（它是系列另一项）；
     但 LLM 笔误 'PRÉSPACE'（8 字差 2）要能命中 'PRÉFACE'。"""

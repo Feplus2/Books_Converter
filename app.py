@@ -61,7 +61,7 @@ TRANSLATE_LANGS = ["简体中文", "English", "日本語", "Français", "Deutsch
                    "Español", "한국어"]
 
 # 解析引擎（设置下拉的显示名 ↔ ocr_provider 注册名）
-ENGINE_OPTIONS = [("mineru", "MinerU"), ("paddleocr", "PaddleOCR-VL")]
+ENGINE_OPTIONS = [("mineru", "MinerU"), ("paddleocr", "PaddleOCR-VL"), ("vlm", "VLM 逐页阅读")]
 _ENGINE_DISPLAY = dict(ENGINE_OPTIONS)
 _ENGINE_BY_DISPLAY = {v: k for k, v in ENGINE_OPTIONS}
 

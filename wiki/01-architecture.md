@@ -5,7 +5,10 @@
 ```
 PDF ──▶ Stage 1 解析引擎（云端 OCR/版面分析）
         ├─ mineru（MinerU 云，支持 强制/自动 OCR；自动模式对 born-digital 用文本层）
-        └─ paddleocr（PaddleOCR-VL 云，永远整页识别；ocr 开关被忽略）
+        ├─ paddleocr（PaddleOCR-VL 云，永远整页识别；ocr 开关被忽略）
+        └─ vlm（多模态模型逐页直读，stage1_vlm：GLM 转写+脚注重建、
+                doubao 图片定位裁剪、SQLite 状态断点续跑、目录先验；
+                调研/实验/选型见 wiki/06，T0–T6 全绿）
         产出（落盘 <work_dir>/<engine>/）：
           {stem}_content_list.json   MinerU 风格块列表（契约）
           {stem}.md                  引擎直出 markdown（留档）

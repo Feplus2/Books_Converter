@@ -51,9 +51,23 @@ DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEFAULT_OUTPUT_DIR = _env("DEFAULT_OUTPUT_DIR", str(Path(__file__).parent / "output"))
 
 # ============================================================
-# OCR 引擎（Stage 1）：mineru / paddleocr
+# OCR 引擎（Stage 1）：mineru / paddleocr / vlm
 # ============================================================
 OCR_PROVIDER = _env("OCR_PROVIDER", "mineru")
+
+# ============================================================
+# VLM 逐页阅读引擎（多模态直读；调研/实验见 wiki/06-vlm-pipeline.md）
+# ============================================================
+VLM_API_KEY = _env("VLM_API_KEY")
+VLM_BASE_URL = _env("VLM_BASE_URL", "https://api.z.ai/api/paas/v4")
+VLM_MODEL = _env("VLM_MODEL", "glm-5.3-flash")
+VLM_REASONING = _env("VLM_REASONING", "low")  # glm-5.3-flash 思考恒开，low 即最优
+# 图片区域定位（粗框 + 本地光栅重裁收边；留空 = 复用 VLM_API_KEY 零额外 key）
+VLM_BBOX_API_KEY = _env("VLM_BBOX_API_KEY")
+VLM_BBOX_BASE_URL = _env("VLM_BBOX_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+VLM_BBOX_MODEL = _env("VLM_BBOX_MODEL", "doubao-seed-2-1-turbo-260628")
+VLM_WORKERS = int(_env("VLM_WORKERS", "4"))
+VLM_DPI = int(_env("VLM_DPI", "150"))
 
 # ============================================================
 # MinerU 参数

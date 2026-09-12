@@ -11,6 +11,8 @@
 | `03-verification.md` | 测试套件、真书回归、QC 体检、暂存副本与书库隔离、产物亲读清单 |
 | `04-cases.md` | FIXLOG 病例分类导读（按缺陷类别索引，链接回 FIXLOG 条目） |
 | `05-build-release.md` | 版本号、PyInstaller 打包、SageRead sidecar 部署、gitignore 卫生 |
+| `06-vlm-pipeline.md` | VLM 逐页读书引擎：调研、成本、风险、T0–T6 测试方案 + **实验报告（全绿通过，§8）** |
+| `07-roadmap-v2.md` | v2.0.0 路线图（用户后话记账：GUI 网页壳重做、设置页、TeX/Markdown 导出） |
 
 ## 三分钟上手
 

@@ -182,8 +182,10 @@ def main():
     if args.skip_mineru:
         est_s1 = 1.0
     else:
-        # MinerU 两书实测均值 ≈ 0.80 s/页；PaddleOCR 实测更快
-        est_s1 = max(total_pages * (0.80 if engine == "mineru" else 0.50), 30)
+        # MinerU 两书实测均值 ≈ 0.80 s/页；PaddleOCR 实测更快；
+        # VLM（glm-5.3-flash/low，workers=4）T6 实测 ≈ 3 s/页
+        est_s1 = max(total_pages * (0.80 if engine == "mineru"
+                                    else 3.0 if engine == "vlm" else 0.50), 30)
     est_s2 = max(total_pages * 0.14, 15)          # hybrid 两书实测均值 ≈ 0.14 s/页
     # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
     est_s3 = max(total_pages * 2.0, 30) if args.translate else 3.0
@@ -203,8 +205,9 @@ def main():
     stage_times = {}
 
     try:
-        # ═══ Stage 1: 解析引擎（MinerU / PaddleOCR） ══════════════════
-        s1_name = {"mineru": "MinerU", "paddleocr": "PaddleOCR"}.get(engine, engine)
+        # ═══ Stage 1: 解析引擎（MinerU / PaddleOCR / VLM） ═════════════
+        s1_name = {"mineru": "MinerU", "paddleocr": "PaddleOCR",
+                   "vlm": "VLM"}.get(engine, engine)
         mineru_info = None
         if not args.skip_mineru:
             pw.update_stage(1, s1_name, "正在准备 PDF 解析...")

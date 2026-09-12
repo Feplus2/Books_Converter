@@ -151,10 +151,35 @@ def _escape_attr(s: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+_LATEX_TYPO_RE = re.compile(r"\\qqud\b")
+_SINGLE_ARG_CMD_RE = re.compile(
+    r"\\(slashed|bar|hat|tilde|vec|dot|ddot|breve|check|acute|grave)([a-zA-Z])")
+
+
+def _sanitize_latex(latex: str) -> str:
+    """模型 LaTeX 常见笔误的窄守卫清洗（只修确定的形态，其余原样）：
+    - \qqud → \qquad（编号间距命令笔误，QFT eq.3.47 实测裸源码泄漏）；
+    - 单参数命令粘连字母补花括号：\slashedp → \slashed{p}（\hbar 等固有
+      命令不受影响——反斜杠后紧跟命令名才命中）。"""
+    latex = _LATEX_TYPO_RE.sub(r"\\qquad", latex)
+    latex = _SINGLE_ARG_CMD_RE.sub(lambda m: f"\\{m.group(1)}{{{m.group(2)}}}", latex)
+    return latex
+
+
+def _strip_alignment_amp(latex: str) -> str:
+    """剥除 LaTeX 对齐标记 &（aligned/eqnarray 的对位符），保留字面 \&。
+    '\\&'（换行+对位）的 & 要剥：保护 \x00 只罩“前一个字符不是反斜杠”的 \&。"""
+    latex = re.sub(r"(?<!\\)\\&", "\x00AMP\x00", latex)
+    latex = latex.replace("&", "")
+    return latex.replace("\x00AMP\x00", "\\&")
+
+
 def _latex_to_mathml(latex: str, display: bool) -> str:
     """LaTeX → MathML（失败返回 None）。"""
     try:
         from latex2mathml.converter import convert as _l2m
+        # 笔误清洗 + 对齐 & 剥除（病例 034 追记：QFT 亲读判定）→ 再转换
+        latex = _strip_alignment_amp(_sanitize_latex(latex))
         mathml = _l2m(latex)
         # 注入源码备份（阅读器不支持 MathML 时的兜底文本）与显示模式。
         # 注意 latex2mathml 自带 display="inline"（标签尾部），必须替换值而
@@ -1050,10 +1075,12 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             if fn["claimed"] or not fn["marker"]:
                 continue
             mark = fn["marker"]
-            # 上标形式 <sup>a</sup> 必试；圈码标记（非字母数字）才退化裸匹配，
-            # 字母/数字标记只允许上标（防误伤正文）
+            # 上标形式 <sup>a</sup> 必试；圈码标记才退化裸匹配，ASCII 字母/数字
+            # 标记只允许上标（防误伤正文）。注意必须用 isascii 限定：
+            # ① 等圈码的 Unicode 类别是数字，isalnum() 判定为 True，
+            # 若用裸 isalnum() 圈码永远进不了裸匹配分支（VLM 引擎病例）。
             patterns = [f"<sup>{mark}</sup>"]
-            if mark and not mark[0].isalnum():
+            if mark and not (mark[0].isascii() and mark[0].isalnum()):
                 patterns.append(mark)
             for pat in patterns:
                 pos = seg.find(pat)
@@ -1071,13 +1098,17 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                 break
         return seg
 
-    def flush_footnotes():
-        """单元收尾：渲染章末尾注（含未锚定的兜底，绝不丢内容）"""
+    def flush_footnotes(before_page: int | None = None):
+        """单元收尾：渲染章末尾注（含未锚定的兜底，绝不丢内容）。
+        before_page 只收尾该页**之前**的脚注——同页脚注的锚点可能在本页
+        后段才处理（页中新开章/节时若提前冲走，锚定必失败，病例 033）；
+        None=全书收尾，全部冲走。"""
         if cur is None:
             return
-        # 未锚定的脚注：凡页码不超过当前水位的，随本单元一并收尾
+        limit = before_page if before_page is not None else 10**9
+        # 未锚定的脚注：凡页码低于水位的，随本单元一并收尾
         for page in sorted(page_fn_map):
-            if page > last_page:
+            if page >= limit:
                 break
             for fn in page_fn_map[page]:
                 if not fn["claimed"]:
@@ -1131,7 +1162,7 @@ def _render_popo_body(popo_blocks: list, content_list: list,
         # ── 标题 ──
         if btype == "title" and level > 0:
             flush_para()
-            flush_footnotes()
+            flush_footnotes(b.get("page", last_page))
             zh = _translation_of(b, translations)
             display = zh if zh else _enrich_title(text, toc_lookup)
             # 标题显示剥 HTML 标签（病例 031：文字版 PDF 文本层把冒号排成

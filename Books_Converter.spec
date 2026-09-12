@@ -8,7 +8,7 @@ tmp_ret = collect_all('tkinterdnd2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # ocr_provider 用 importlib 懒加载 provider，静态分析扫不到，必须显式列出
 hiddenimports += ['ocr_provider', 'stage1_mineru_provider', 'stage1_paddleocr',
-                  'stage1_layout', 'updater', 'version', 'requests',
+                  'stage1_layout', 'stage1_vlm', 'vlm_client', 'updater', 'version', 'requests',
                   # latex2mathml 在 stage3 函数内懒导入，且带运行时数据文件
                   # unimathsymbols.txt（漏打则每条公式转 MathML 都失败退 <code> 裸源码，
                   # 见 FIXLOG 病例 013）

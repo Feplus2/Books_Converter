@@ -56,7 +56,7 @@ def main():
     ap = argparse.ArgumentParser(description="批量跑书 + 体检汇总")
     ap.add_argument("pdfs", nargs="+", help="PDF 路径（支持 glob）")
     ap.add_argument("--engine", default="mineru",
-                    choices=["mineru", "paddleocr"])
+                    choices=["mineru", "paddleocr", "vlm"])
     args = ap.parse_args()
 
     pdfs = []

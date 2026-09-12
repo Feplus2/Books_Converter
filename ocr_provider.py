@@ -57,6 +57,7 @@ def count_pages(pdf_path: str) -> int:
 _BUILTIN = {
     "mineru": ("stage1_mineru_provider", "MinerUProvider"),
     "paddleocr": ("stage1_paddleocr", "PaddleOcrProvider"),
+    "vlm": ("stage1_vlm", "VlmProvider"),
 }
 
 _FACTORIES: dict[str, Callable[[], OcrProvider]] = {}
