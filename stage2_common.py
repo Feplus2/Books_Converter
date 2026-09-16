@@ -494,6 +494,9 @@ def _normalize_title(text: str) -> str:
     # 弯引号/弯撇号统一为直引（OCR 与目录常不一致）
     t = (t.replace("’", "'").replace("‘", "'")
            .replace("“", '"').replace("”", '"'))
+    # 全半角括号统一（病例 037：目录半角（义位系统）↔ 正文全角（义位系统）
+    # 失配，锚点落空 → 救援合成幻影）
+    t = t.replace("（", "(").replace("）", ")")
     return re.sub(r"[\s　]+", "", t).strip().casefold()
 
 
@@ -683,6 +686,10 @@ def _is_generic_tail_word(key: str) -> bool:
     return key.isalpha() and key in _GENERIC_TAIL_WORDS
 
 
+# 纯日期形标题键（归一化后无空格小写）：'7january1976'
+_DATE_SHAPE_RE = re.compile(r"^\d{1,2}[a-z]+\d{4}$")
+
+
 def _match_anchor(text: str, anchors: list):
     """归一化匹配锚点：精确 > 块是锚点前缀 > 块是锚点尾部（分隔页模式）
     > 有界编辑距离（容忍 OCR 单字差异）。
@@ -756,6 +763,20 @@ def _match_anchor(text: str, anchors: list):
                     sub_best = (k, a)
         if sub_best is not None:
             return sub_best[1]
+    # 日期形强键（自迭代批·必须保卫社会：无编号讲稿章，正文标题是纯日期
+    # '7 JANUARY 1976'，目录条目含同一日期串+摘要）——日期作强键锚定；
+    # 多个同日期条目取最短（最具体），完全同长才算歧义放弃（不动作）
+    if _DATE_SHAPE_RE.fullmatch(key):
+        date_hits = [a for a in anchors
+                     if re.search(r"(?<!\d)" + re.escape(key) + r"(?!\d)", a[0])]
+        if date_hits:
+            date_hits.sort(key=lambda a: len(a[0]))
+            # 歧义判定：剥掉日期串后余部不同 = 不同条目共享日期（数据异常）
+            # → 不动作；余部相同 = 简目/详目重复条目 → 取最短（最具体）
+            remainders = {a[0].replace(key, "", 1) for a in date_hits}
+            if len(remainders) == 1:
+                return date_hits[0]
+            return None  # 歧义明确不动作，不落入模糊兜底
     # 模糊兜底：目录页与正文的 OCR 结果常有单字差异（僵/催、是/和、缺字）
     if len(key) >= 4:
         best = None

@@ -148,7 +148,7 @@ class TestTocPrior(_Base):
             _page(),
         ])
         cl = self.content_list()
-        toc_blocks = [b for b in cl if "民法概念论 … 3" in b.get("text", "")]
+        toc_blocks = [b for b in cl if "民法概念论 …… 3" in b.get("text", "")]
         self.assertEqual(len(toc_blocks), 2)  # 两页各一条（content_list 保留页级现场）
         self.assertTrue(all(b["text_level"] == 1 for b in toc_blocks))
         # 先验库去重
@@ -213,6 +213,15 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(_strip_page_suffix("7.1 The QED Lagrangian … 180"),
                          "7.1 The QED Lagrangian")
         self.assertEqual(_strip_page_suffix("1.1 Overview …… 1"), "1.1 Overview")
+        # 索引偷走：后部更稠密的组（索引页）不得抢目录区（必须保卫社会实测）
+        pj2 = {i: {"blocks": [{"t": "toc", "text": f"x{j}", "level": 2, "page": j}
+                              for j in range(4)]} for i in range(3, 6)}
+        pj2[3]["blocks"].insert(0, {"t": "title", "text": "CONTENTS", "level": 1})
+        for i in range(331, 333):   # 索引页：2 页 × 12 条（更稠密）
+            pj2[i] = {"blocks": [{"t": "toc", "text": f"idx{j}", "level": 2, "page": j}
+                                 for j in range(12)]}
+        pj2[60] = {"blocks": []}   # 撑大 max_page 让 331 落入后半
+        self.assertEqual(_toc_region_pages(pj2), {3, 4, 5})
 
     def test_drop_minitoc_lines(self):
         """mini-TOC 行四条件齐才丢：命中先验 + 同页成串 + 下游有真标题 +
@@ -360,6 +369,13 @@ class TestHelpers(unittest.TestCase):
         self.assertIsNone(extract_json('{"a": 1'))
         self.assertIsNone(extract_json(''))
         self.assertIsNone(extract_json(None))
+
+    def test_extract_json_bad_escapes(self):
+        """JSON 字符串里的 LaTeX 孤反斜杠（\\sqrt 的 \\s 非法转义）修补后解析
+        （高数 p27/p290 实测两页因此失败）；修补不了仍返回 None（不动作）。"""
+        self.assertEqual(extract_json('{"a": "公式 $\\\\sqrt{x}$ 完"}'),
+                         {"a": "公式 $\\sqrt{x}$ 完"})
+        self.assertIsNone(extract_json('{"a": '))
 
     def test_reasoning_map(self):
         # glm-5.3-flash 恒思考：off 也必须落到 low，永不下发 disabled（400 实证）

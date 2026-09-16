@@ -103,6 +103,37 @@ def main():
         help="跳过结构分析阶段（使用已有 structure.json）",
     )
     parser.add_argument(
+        "--format",
+        dest="formats",
+        default="epub",
+        metavar="FMT[,FMT…]",
+        help="导出格式多选：epub,md,tex（逗号分隔，默认 epub）",
+    )
+    parser.add_argument(
+        "--md-split",
+        action="store_true",
+        help="Markdown 按章拆分（index.md + chapters/；默认单文件）",
+    )
+    parser.add_argument(
+        "--md-dialect",
+        choices=["gfm", "pandoc"],
+        default="gfm",
+        help="Markdown 方言（默认 gfm）",
+    )
+    parser.add_argument(
+        "--tex-fragment",
+        dest="tex_full",
+        action="store_false",
+        help="TeX 只产片段（默认完整可编译文档）",
+    )
+    parser.set_defaults(tex_full=True)
+    parser.add_argument(
+        "--export-lang",
+        choices=["auto", "orig", "trans", "both"],
+        default="auto",
+        help="导出语言：auto=有译文用译文；orig=原文；trans=译文；both=双出（默认 auto）",
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=None,
@@ -300,6 +331,7 @@ def main():
         # ═══ Stage 3: EPUB 生成 ════════════════════════════════════
         pw.update_stage(s_epub, "EPUB 生成", "渲染章节 HTML、构建嵌套 TOC、打包...")
         t0 = time.time()
+        products: dict[str, list[str]] = {}
         try:
             epub_path = generate_epub(
                 book_name,
@@ -316,6 +348,33 @@ def main():
                 shutil.copy2(epub_path, final_path)
                 logger.info(f"  EPUB 已复制到: {final_path}")
                 epub_path = final_path
+            products["epub"] = [str(epub_path)]
+            # ── 平行导出（Markdown/TeX，--format 多选）──
+            extra_formats = {f.strip() for f in str(args.formats).split(",")} - {"epub", ""}
+            if extra_formats:
+                try:
+                    from stage3_export import export_book
+                    produced = export_book(
+                        str(work_dir), extra_formats,
+                        md_split=args.md_split, md_dialect=args.md_dialect,
+                        tex_full=args.tex_full, export_lang=args.export_lang,
+                        progress=lambda d, f=None: pw.update_stage(s_epub, "EPUB 生成", d, f),
+                    )
+                    for fmt, paths in produced.items():
+                        for p in paths:
+                            fp = output_base / p.name
+                            if p != fp:
+                                import shutil
+                                if p.is_dir():
+                                    if fp.exists():
+                                        shutil.rmtree(fp)
+                                    shutil.copytree(p, fp)
+                                else:
+                                    shutil.copy2(p, fp)
+                                logger.info(f"  {fmt.upper()} 已复制到: {fp}")
+                            products.setdefault(fmt, []).append(str(fp))
+                except Exception as e:
+                    logger.error(f"导出 {sorted(extra_formats)} 失败（EPUB 不受影响）: {e}")
         except Exception as e:
             logger.error(f"Stage 3 失败: {e}")
             import traceback
@@ -340,15 +399,28 @@ def main():
         logger.info("=" * 60)
 
         # headless 需要完整路径（前端据此读文件入库）；GUI 仍只显示文件名
+        from version import __version__
+        _register_product(output_base, {
+            "v": 1,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "title": book_name,
+            "source_pdf": str(pdf_path),
+            "work_dir": str(work_dir),
+            "engine": engine,
+            "ocr": bool(args.ocr),
+            "translate": args.translate,
+            "vlm_model": config.VLM_MODEL if engine == "vlm" else None,
+            "vlm_reasoning": config.VLM_REASONING if engine == "vlm" else None,
+            "formats": sorted(products.keys()),
+            "products": products,
+            "elapsed_s": round(total_elapsed, 1),
+            "app_version": __version__,
+        })
         pw.finish(str(epub_path) if args.headless else str(epub_path.name), total_elapsed)
 
-        # 声音提示：清脆的上行琶音（C6-E6-G6-C7）
-        try:
-            import winsound
-            for freq, dur in ((1046, 110), (1319, 110), (1568, 110), (2093, 260)):
-                winsound.Beep(freq, dur)
-        except Exception:
-            pass
+        # 完成提示音（异步 WAV；CONVERT_COMPLETE_SOUND=off 可关）
+        from completion_sound import play_completion_sound
+        play_completion_sound()
 
         return epub_path
 
@@ -367,6 +439,21 @@ def main():
         if args.headless:
             emit_error(str(e) or _ErrCapture.first or "转换失败")
         raise
+
+
+def _register_product(output_base: Path, record: dict) -> None:
+    """产物登记处：每完成一本向 <输出目录>/_registry.jsonl 追加一行。
+
+    这是 GUI 产物库（wiki/08）的数据源。失败方向 = 不动作：
+    登记失败只告警，绝不影响转换主流程。
+    """
+    import json
+    try:
+        output_base.mkdir(parents=True, exist_ok=True)
+        with open(output_base / "_registry.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"产物登记失败（不影响产物）: {e}")
 
 
 def _read_pdf_outline(pdf_path: Path) -> list:

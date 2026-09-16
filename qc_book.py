@@ -266,7 +266,9 @@ def check_book(work_dir: str) -> dict:
             for c in node.get("children", []):
                 if not isinstance(c, dict):
                     continue
-                if c.get("level", -1) > 0 and not _node_has_content(c):
+                if c.get("level", -1) > 0 \
+                        and c.get("type") not in ("image", "table", "chart", "seal", "image_block") \
+                        and not _node_has_content(c):
                     out.append(c.get("title") or c.get("type"))
                 _empty_chapters(c, out)
         empties = []

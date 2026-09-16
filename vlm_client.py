@@ -53,17 +53,26 @@ def reasoning_extra(base_url: str, model: str, level: str | None) -> dict:
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
+_BAD_ESC_RE = re.compile(r'\\(?!["\\/bfnrtu])')   # 不在 JSON 合法转义集内的孤反斜杠
 
 
 def extract_json(content: str) -> dict | None:
-    """从模型输出抽取最外层 JSON 对象；容忍 ```json 围栏。失败返回 None。"""
+    """从模型输出抽取最外层 JSON 对象；容忍 ```json 围栏。失败返回 None。
+
+    模型在 JSON 字符串里写 LaTeX 时常漏转义（'\\sqrt' 的 \\s 是非法 JSON
+    转义）→ 先精确解析，失败则修补孤反斜杠再解析（高数 p27/p290 实测）。"""
     if not content:
         return None
     m = _JSON_RE.search(content)
     if not m:
         return None
+    raw = m.group(0)
     try:
-        return json.loads(m.group(0))
+        return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        return json.loads(_BAD_ESC_RE.sub(r"\\\\", raw))
     except Exception:
         return None
 

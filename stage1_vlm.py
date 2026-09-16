@@ -2,9 +2,8 @@
 
 设计依据 wiki/06-vlm-pipeline.md §8（T0–T6 实验全绿）：
 - 转写/结构/脚注主力模型 GLM-5.3-Flash @ thinking low（脚注 A 案 JSON 直接配对）；
-- 图片提取：转写模型出粗框（默认同 key，零额外配置）+ raster_snap 连通域
+- 图片提取：转写模型出粗框（同 key，零额外配置）+ raster_snap 连通域
   光栅重裁收边（T4b 实测 meanIoU 0.883、IoU≥0.8 比例 95.2%）；
-  可选配火山豆包定位（VLM_BBOX_*，T4 实测 meanIoU 0.976）；
 - 上页尾部 300 字符 <context_only> 注入（零续写污染实测）；
 - 目录页就地提取、简目详目去重、层级提示注入后续页（形状栈：同级同类同 level）；
 - SQLite 状态库逐页事务提交，断点续跑；页失败方向=不动作（留空+记录，
@@ -244,10 +243,17 @@ def _strip_page_suffix(text: str) -> str:
     return _PAGE_SUFFIX_RE.sub("", text or "").strip()
 
 
+_TOC_HEAD_RE = re.compile(r"目\s*录|简\s*目|详\s*目|contents?", re.I)
+
+
 def _toc_region_pages(pages_json: dict[int, dict]) -> set[int]:
-    """真目录区判定：含 ≥3 个 toc 块的连续页组（gap≤1），取条目最多的一组
-    （≥5 条才算）。章首 mini-TOC（孤立、条目少）不是目录页——其条目按普通
-    正文处理，防 stage2 目录区检测吞掉正文起点（QFT 实测：front_matter toc
+    """真目录区判定：含 ≥3 个 toc 块的连续页组（gap≤1）。
+    定位优先级：含"目录/CONTENTS"页首词的组 > 前 50% 内最早的组；
+    目录标题词组之后 gap≤3 的相邻组并入（简目+详目被扉页隔开的情形）；
+    书后半部的稠密组（索引页等）一律排除（必须保卫社会实测：索引页
+    331-332 比真目录 3-5 更稠密，"取最多"被偷走）。
+    章首 mini-TOC（孤立、条目少）不是目录页——其条目按普通正文处理，
+    防 stage2 目录区检测吞掉正文起点（QFT 实测：front_matter toc
     6-59 吞掉 ch1-3，病例 034）。"""
     dense = {p for p, pj in pages_json.items()
              if sum(1 for b in pj.get("blocks", []) if b.get("t") == "toc") >= 3}
@@ -258,13 +264,37 @@ def _toc_region_pages(pages_json: dict[int, dict]) -> set[int]:
         if groups[-1] and p - groups[-1][-1] > 1:
             groups.append([])
         groups[-1].append(p)
+    groups = [g for g in groups if g]
+    if not groups:
+        return set()
 
-    def score(g: list[int]) -> int:
-        return sum(sum(1 for b in pages_json[p].get("blocks", []) if b.get("t") == "toc")
-                   for p in g)
+    def has_heading(p: int) -> bool:
+        for b in pages_json[p].get("blocks", [])[:3]:
+            if b.get("t") in ("title", "text") and _TOC_HEAD_RE.search(str(b.get("text", ""))[:30]):
+                return True
+        return False
 
-    best = max(groups, key=score)
-    return set(best) if score(best) >= 5 else set()
+    max_page = max(pages_json) if pages_json else 0
+    head_groups = [g for g in groups if any(has_heading(p) for p in g)]
+    if head_groups:
+        region: set[int] = set()
+        for gi, g in enumerate(groups):
+            if g in head_groups:
+                region |= set(g)
+                # 吸收紧随的相邻组（gap≤3，简目/详目分离情形）
+                for g2 in groups[gi + 1:]:
+                    if g2[0] - g[-1] <= 3 and g2[0] <= max_page * 0.5:
+                        region |= set(g2)
+                        g = g2
+                    else:
+                        break
+                break  # 目录只可能有一处
+        return region
+    # 无标题词：取前 50% 内最早稠密组（失败方向=宁缺毋滥，索引在后天然排除）
+    for g in groups:
+        if g[0] <= max_page * 0.5:
+            return set(g)
+    return set()
 
 
 def _drop_minitoc_lines(pages_json: dict[int, dict], toc_pages: set,
@@ -472,20 +502,8 @@ class VlmProvider:
             model=opts.get("model", config.VLM_MODEL),
             reasoning=opts.get("reasoning", config.VLM_REASONING),
         )
-        bbox_client = None
-        bbox_key = opts.get("bbox_api_key", config.VLM_BBOX_API_KEY)
-        if not opts.get("no_images"):
-            if bbox_key:
-                bbox_client = VlmClient(
-                    base_url=opts.get("bbox_base_url", config.VLM_BBOX_BASE_URL),
-                    api_key=bbox_key,
-                    model=opts.get("bbox_model", config.VLM_BBOX_MODEL),
-                    reasoning="off",
-                )
-            else:
-                # 默认与转写同 key 同模型（glm 粗框 + 光栅重裁），用户零额外 key
-                bbox_client = text_client
-        self._text_client = text_client
+        # 图片定位与转写同源（同模型出粗框 + 光栅重裁），零额外 key
+        bbox_client = None if opts.get("no_images") else text_client
         workers = int(opts.get("workers", config.VLM_WORKERS))
         dpi = int(opts.get("dpi", config.VLM_DPI))
         crop_dpi = int(opts.get("crop_dpi", 300))
@@ -682,12 +700,6 @@ class VlmProvider:
                 page = doc[p]
                 low_png = page.get_pixmap(dpi=150).tobytes("png")
                 boxes = self._detect_boxes(bbox_client, low_png)
-                # 主定位失败 → 回退转写模型（若不同源；doubao 对个别页输出裸数组/絮语
-                # 不稳定，glm 同页可解——QFT Fig 5.3 实测）
-                if not boxes and bbox_client is not getattr(self, "_text_client", None):
-                    alt = getattr(self, "_text_client", None)
-                    if alt is not None:
-                        boxes = self._detect_boxes(alt, low_png)
                 if not boxes:
                     raise ValueError("bbox 定位失败/为空")
 
@@ -788,7 +800,7 @@ class VlmProvider:
                     if p in toc_pages:
                         # 真目录区：MinerU 形态（条目尾页码），供 stage2 目录提取
                         page = b.get("page")
-                        txt = b["text"].strip() + (f" … {page}" if page is not None else "")
+                        txt = b["text"].strip() + (f" …… {page}" if page is not None else "")
                         out.append({"type": "text", "text": txt, "text_level": 1,
                                     "bbox": bbox, "page_idx": p})
                     else:

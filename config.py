@@ -62,10 +62,7 @@ VLM_API_KEY = _env("VLM_API_KEY")
 VLM_BASE_URL = _env("VLM_BASE_URL", "https://api.z.ai/api/paas/v4")
 VLM_MODEL = _env("VLM_MODEL", "glm-5.3-flash")
 VLM_REASONING = _env("VLM_REASONING", "low")  # glm-5.3-flash 思考恒开，low 即最优
-# 图片区域定位（粗框 + 本地光栅重裁收边；留空 = 复用 VLM_API_KEY 零额外 key）
-VLM_BBOX_API_KEY = _env("VLM_BBOX_API_KEY")
-VLM_BBOX_BASE_URL = _env("VLM_BBOX_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-VLM_BBOX_MODEL = _env("VLM_BBOX_MODEL", "doubao-seed-2-1-turbo-260628")
+# 图片区域定位：复用转写模型出粗框 + 本地光栅重裁收边（零额外 key，无独立定位模型）
 VLM_WORKERS = int(_env("VLM_WORKERS", "4"))
 VLM_DPI = int(_env("VLM_DPI", "150"))
 

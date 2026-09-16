@@ -19,6 +19,10 @@
    .venv/Scripts/python.exe tests/test_stage3_merge.py       # 段落合并
    .venv/Scripts/python.exe tests/test_stage3_promote.py
    .venv/Scripts/python.exe tests/test_stage4_translate.py   # 翻译批校验
+   .venv/Scripts/python.exe tests/test_stage3_export.py      # md/tex 导出
+   .venv/Scripts/python.exe tests/test_stage3_footnote.py    # 脚注锚定
+   .venv/Scripts/python.exe tests/test_stage1_vlm.py         # VLM 引擎
+   .venv/Scripts/python.exe tests/test_raster_snap.py        # 光栅重裁
    ```
    新修规则必须带新测试用例进 `tests/`。
 2. **真书回归**：用暂存副本跑真实书（`--skip-mineru` 复用 Stage 1 缓存），

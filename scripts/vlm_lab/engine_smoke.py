@@ -17,11 +17,8 @@ def main() -> None:
     end = int(sys.argv[2]) if len(sys.argv) > 2 else 46
     work = sys.argv[3] if len(sys.argv) > 3 else r"_regress\vlm-lab\smoke"
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
-    kw = {}
-    if "--no-doubao" in sys.argv:      # 模拟零额外 key 的默认用户：转写模型出粗框
-        kw["bbox_api_key"] = ""
     out = VlmProvider().parse(r"_regress\vlm-lab\pdfs\minfa.pdf", work,
-                              workers=4, start_page=start, end_page=end, **kw)
+                              workers=4, start_page=start, end_page=end)
     cl = out["content_list"]
     print("blocks:", len(cl), Counter(b["type"] for b in cl))
     meta = json.loads((Path(work) / "vlm" / "metadata.json").read_text(encoding="utf-8"))

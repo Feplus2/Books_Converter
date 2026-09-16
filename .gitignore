@@ -37,3 +37,9 @@ _regress/
 # 系统垃圾
 .DS_Store
 Thumbs.db
+
+# 新 GUI（Tauri）构建产物
+gui/node_modules/
+gui/dist/
+gui/src-tauri/target/
+gui/src-tauri/gen/

@@ -13,6 +13,7 @@
 | `05-build-release.md` | 版本号、PyInstaller 打包、SageRead sidecar 部署、gitignore 卫生 |
 | `06-vlm-pipeline.md` | VLM 逐页读书引擎：调研、成本、风险、T0–T6 测试方案 + **实验报告（全绿通过，§8）** |
 | `07-roadmap-v2.md` | v2.0.0 路线图（用户后话记账：GUI 网页壳重做、设置页、TeX/Markdown 导出） |
+| `08-gui-overhaul.md` | **GUI 重做方案（对齐稿）**：Tauri+sidecar、四页信息架构、设计系统、registry、M1-M4 分期 |
 
 ## 三分钟上手
 

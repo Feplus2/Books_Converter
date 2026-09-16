@@ -1,0 +1,237 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-card2: var(--card2);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink2);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+}
+
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --card2: #f2f4f7;
+  --ink: #16181d;
+  --ink2: #6b7280;
+  --line: #e3e6ea;
+  --accent: #2563eb;
+  --accent-ink: #ffffff;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+}
+
+[data-theme="dark"] {
+  --bg: #0e1116;
+  --card: #171b22;
+  --card2: #1c212b;
+  --ink: #e7e9ec;
+  --ink2: #9ca3af;
+  --line: transparent;
+  --accent: #3b82f6;
+  --accent-ink: #ffffff;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #ef4444;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    "Inter",
+    -apple-system,
+    "PingFang SC",
+    "Microsoft YaHei",
+    "Segoe UI",
+    sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* number input 去掉原生上下箭头（自绘风格统一） */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.mono {
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 组件类放 components 层：Tailwind utilities 可覆盖（如 pl-9 覆盖 .input 的 padding） ── */
+@layer components {
+  /* 卡片：1px 边线无阴影；暗主题无边线、用比背景亮的面 */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  /* 条目 hover 微浮起 + 主色低透明外发光 */
+  .lift {
+    transition:
+      transform 150ms ease,
+      box-shadow 150ms ease,
+      border-color 150ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 10px;
+    padding: 8px 15px;
+    font-size: 13.5px;
+    font-weight: 500;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    cursor: pointer;
+    transition:
+      filter 150ms ease,
+      background 150ms ease,
+      transform 150ms ease,
+      box-shadow 150ms ease;
+    user-select: none;
+  }
+  .btn:hover:not(:disabled) {
+    filter: brightness(0.97);
+    transform: translateY(-1px);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-ghost {
+    border-color: transparent;
+    background: transparent;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    box-shadow: none;
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: var(--ink2);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    transition:
+      background 150ms ease,
+      color 150ms ease;
+  }
+  .icon-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+  }
+  .icon-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .input {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13.5px;
+    color: var(--ink);
+    outline: none;
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease;
+  }
+  [data-theme="dark"] .input {
+    border-color: color-mix(in srgb, var(--ink) 10%, transparent);
+  }
+  /* 暗主题无边线规则只针对卡片；按钮/浮层仍需可见边线 */
+  [data-theme="dark"] .btn {
+    border-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+  .input::placeholder {
+    color: var(--ink2);
+  }
+}
+
+/* 页面切换 150ms 淡入位移 */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-enter {
+  animation: page-in 150ms ease-out;
+}
+
+/* 进度条：细轨 + 主色填充 */
+.progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  overflow: visible;
+  position: relative;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 200ms ease;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

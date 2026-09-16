@@ -79,6 +79,9 @@ def test_normalize_strips_footnote_mark_and_decor():
     assert nt("人名索引 $^{①}$") == "人名索引"
     assert nt("— X. — La crise des flèvres") == "lacrisedesflèvres"
     assert nt("— II. — Une conscience politique") == "uneconsciencepolitique"
+    # 全半角括号统一（病例 037）：目录半角（义位系统） ↔ 正文全角（义位系统）
+    assert nt("第七章 语义场（义位系统）（下）") == nt("第七章 语义场(义位系统)(下)")
+    assert nt("第七章\u3000语义场（义位系统）（下）") == nt("第七章 语义场(义位系统)(下)")
 
 
 def test_anchor_math_delimiters_and_quotes():
@@ -126,6 +129,32 @@ def test_anchor_generic_tail_word_blocked():
     # 通用词精确命中（rule 1）不受影响
     m3 = _match_anchor("Exercises", _build_anchors([{"text": "Exercises", "level": 2, "page": 41}]))
     assert m3 is not None and m3[3] == 41
+
+
+def test_anchor_date_shape_key():
+    """日期强键（自迭代批·必须保卫社会）：纯日期块锚定到含同日期串的条目；
+    非日期块不受影响；歧义（同长双条目）不动作。"""
+    from stage2_common import _build_anchors, _match_anchor
+    anchors = _build_anchors([
+        {"text": "one 7 JANUARY 1976 What is a lecture? - Subjugated knowledges.",
+         "level": 1, "page": 1},
+        {"text": "two 14 JANUARY 1976 War and power.", "level": 1, "page": 23},
+        {"text": "21 JANUARY 1976 The social contract.", "level": 1, "page": 43},
+    ])
+    m = _match_anchor("7 JANUARY 1976", anchors)
+    assert m is not None and m[3] == 1
+    m2 = _match_anchor("14 January 1976", anchors)
+    assert m2 is not None and m2[3] == 23
+    # 非日期形块不触发
+    assert _match_anchor("What is a lecture?", anchors) is None
+    # 歧义：两条同长条目含同日期（长摘要让子串规则先出局）→ 不动作
+    dup = _build_anchors([
+        {"text": "one 7 JANUARY 1976 What is a lecture? - Subjugated knowledges. - Historical knowledge of struggles.",
+         "level": 1, "page": 1},
+        {"text": "two 7 JANUARY 1976 War and power. - Philosophy and the limits of power. - Law and royal power.",
+         "level": 1, "page": 9},
+    ])
+    assert _match_anchor("7 JANUARY 1976", dup) is None
 
 
 def test_anchor_fuzzy_short_key():

@@ -222,9 +222,11 @@ prompt 集，走 AGENTS.md 强制验证链（单测 + 真书回归 + 亲读产�
 1. **选型**：转写/结构/脚注主力 = **GLM-5.3-Flash @ thinking low**
    （low/high/max 质量一致，max 烧 2–4× token 无收益；该型号思考恒开不可关，
    low 是地板也是最优）；图片提取 = **同模型出粗框 + raster_snap 连通域
-   光栅重裁**（默认零额外 key；T4b 实测 meanIoU 0.883、IoU≥0.8 比例 95.2%，
-   可选配 doubao-seed-2-1-turbo 冲 0.976，T4 实测）；镜像备选 =
-   **deepseek-flash**（最快 2.75s/页、token 最省、干净页质量持平 GLM）。
+   光栅重裁**（零额外 key；T4b 实测 meanIoU 0.883、IoU≥0.8 比例 95.2%）。
+   **2026-09-16 决策：独立图片定位模型（doubao-seed-2-1-turbo，T4 实测
+   0.976）从产品管线移除**——不为单一功能引入第二家 key；T4/T4b 成绩
+   保留为实验档案。镜像备选 = **deepseek-flash**（最快 2.75s/页、token
+   最省、干净页质量持平 GLM）。
 2. **出局**：qwen3-vl-flash（格式服从性三连败：脚注混排 body、T2 截断
    80 条、bbox 裸数组）；glm-4.6v-flash（同款格式病 + z.ai 限流 1305）；
    gemini-3-flash 经 cherryin 聚合（思考烧 7.8k token/页撞 max_tokens，

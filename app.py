@@ -114,6 +114,9 @@ STRINGS = {
         "update_new": "发现新版本 v{latest}（当前 v{ver}）。\n\n前往下载页面？",
         "update_fail": "检查更新失败：{err}",
         "save": "保存设置",
+        "lbl_formats": "导出格式",
+        "fmt_md_split": "Markdown 按章拆分",
+        "fmt_lang": "导出语言(auto 跟随翻译)",
         "saved": "✓ 已存",
         "waiting": "等待中",
         "pages": "{n} 页",
@@ -226,6 +229,9 @@ STRINGS = {
         "update_new": "Version v{latest} is available (current v{ver}).\n\nOpen the download page?",
         "update_fail": "Update check failed: {err}",
         "save": "Save settings",
+        "lbl_formats": "Export formats",
+        "fmt_md_split": "Split Markdown by chapter",
+        "fmt_lang": "Export language (auto = follows translation)",
         "saved": "✓ Saved",
         "waiting": "Waiting",
         "pages": "{n} p.",
@@ -322,6 +328,10 @@ def _default_settings() -> dict:
         "translate_lang": "简体中文",
         "ui_lang": "zh",
         "output_dir": "",          # 空 = PDF 同目录
+        "fmt_md": False,           # 追加导出 Markdown
+        "fmt_tex": False,          # 追加导出 TeX
+        "md_split": False,         # Markdown 按章拆分
+        "export_lang": "auto",     # auto/orig/trans/both
     }
 
 
@@ -448,13 +458,9 @@ def _compute_spans(estimates: list) -> dict:
 
 
 def _play_done_sound():
-    """清脆的上行琶音（C6-E6-G6-C7），同 pipeline.py 末尾"""
-    try:
-        import winsound
-        for freq, dur in ((1046, 110), (1319, 110), (1568, 110), (2093, 260)):
-            winsound.Beep(freq, dur)
-    except Exception:
-        pass
+    """完成提示音（异步 WAV；CONVERT_COMPLETE_SOUND=off 可关），同 pipeline.py 末尾"""
+    from completion_sound import play_completion_sound
+    play_completion_sound()
 
 
 # ════════════════════════════════════════════════════════════
@@ -551,6 +557,11 @@ class App:
         self.var_translate = tk.BooleanVar(value=bool(self.settings["translate"]))
         self.var_translate_lang = tk.StringVar(value=self.settings["translate_lang"])
         self.var_outdir = tk.StringVar(value=self.settings["output_dir"])
+        self.var_fmt_md = tk.BooleanVar(value=bool(self.settings.get("fmt_md")))
+        self.var_fmt_tex = tk.BooleanVar(value=bool(self.settings.get("fmt_tex")))
+        self.var_md_split = tk.BooleanVar(value=bool(self.settings.get("md_split")))
+        self.var_export_lang = tk.StringVar(
+            value=self.settings.get("export_lang", "auto"))
         self.var_ui_lang = tk.StringVar(
             value="English" if self.lang == "en" else "中文")
 
@@ -862,6 +873,27 @@ class App:
                     ).grid(row=0, column=0, sticky="ew")
         self._btn(out_row, self._t("browse"), self._browse_outdir, small=True
                   ).grid(row=0, column=1, padx=(8, 0))
+
+        # ── 导出格式（EPUB 恒产；Markdown/TeX 追加）──
+        row_label(11, self._t("lbl_formats"))
+        fmt_row = tk.Frame(sp, bg=_CARD)
+        fmt_row.grid(row=11, column=1, sticky="w", pady=(10, 4))
+        Toggle(fmt_row, self.var_fmt_md, bg=_CARD).pack(side="left")
+        tk.Label(fmt_row, text="Markdown", bg=_CARD, fg=_INK,
+                 font=self.fonts["body"]).pack(side="left", padx=(8, 16))
+        Toggle(fmt_row, self.var_fmt_tex, bg=_CARD).pack(side="left")
+        tk.Label(fmt_row, text="TeX", bg=_CARD, fg=_INK,
+                 font=self.fonts["body"]).pack(side="left", padx=(8, 16))
+        Toggle(fmt_row, self.var_md_split, bg=_CARD).pack(side="left")
+        tk.Label(fmt_row, text=self._t("fmt_md_split"), bg=_CARD, fg=_INK,
+                 font=self.fonts["body"]).pack(side="left", padx=(8, 0))
+        self._explang_combo = ttk.Combobox(
+            fmt_row, values=["auto", "orig", "trans", "both"], state="readonly",
+            textvariable=self.var_export_lang, style="Paper.TCombobox",
+            font=self.fonts["body"], width=7)
+        self._explang_combo.pack(side="left", padx=(16, 6))
+        tk.Label(fmt_row, text=self._t("fmt_lang"), bg=_CARD, fg=_FAINT,
+                 font=self.fonts["small"]).pack(side="left")
         tk.Label(sp, text=self._t("outdir_hint"), bg=_CARD, fg=_FAINT,
                  font=self.fonts["small"], anchor="w"
                  ).grid(row=11, column=1, sticky="w")
@@ -1147,6 +1179,10 @@ class App:
             "translate_lang": self.var_translate_lang.get(),
             "ui_lang": self.lang,
             "output_dir": self.var_outdir.get().strip(),
+            "fmt_md": bool(self.var_fmt_md.get()),
+            "fmt_tex": bool(self.var_fmt_tex.get()),
+            "md_split": bool(self.var_md_split.get()),
+            "export_lang": self.var_export_lang.get(),
         }
 
     def _on_save_settings(self):
@@ -1516,6 +1552,22 @@ class App:
                 import shutil
                 shutil.copy2(epub_path, final)
             epub_path = final
+            # ── 追加导出（Markdown/TeX，设置页勾选；失败不影响 EPUB）──
+            extra = set()
+            if self.settings.get("fmt_md"):
+                extra.add("md")
+            if self.settings.get("fmt_tex"):
+                extra.add("tex")
+            if extra:
+                try:
+                    from stage3_export import export_book
+                    export_book(str(work_dir), extra,
+                                md_split=bool(self.settings.get("md_split")),
+                                export_lang=self.settings.get("export_lang", "auto"),
+                                progress=lambda d, f=None: self._put(
+                                    "stage_update", i, s_epub, self._t("s4_name"), d, f))
+                except Exception as e:
+                    logger.warning(f"导出 {sorted(extra)} 失败（EPUB 不受影响）: {e}")
         except Exception as e:
             self._put("book_error", i, self._t("fail_epub", err=e))
             return False

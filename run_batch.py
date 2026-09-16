@@ -30,7 +30,8 @@ def run_one(pdf: Path, engine: str) -> dict:
     log_path = LOG_DIR / f"{name}.log"
 
     cmd = [sys.executable, str(Path(__file__).parent / "pipeline.py"),
-           str(pdf), "--engine", engine, "--headless"]
+           str(pdf), "--engine", engine, "--headless"] + \
+          (["--format", args.formats] if getattr(args, "formats", "epub") != "epub" else [])
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     t0 = time.time()
     with open(log_path, "w", encoding="utf-8") as lf:
@@ -57,6 +58,8 @@ def main():
     ap.add_argument("pdfs", nargs="+", help="PDF 路径（支持 glob）")
     ap.add_argument("--engine", default="mineru",
                     choices=["mineru", "paddleocr", "vlm"])
+    ap.add_argument("--format", dest="formats", default="epub",
+                    help="导出格式多选：epub,md,tex（逗号分隔，默认 epub）")
     args = ap.parse_args()
 
     pdfs = []
