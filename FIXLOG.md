@@ -1195,3 +1195,34 @@
 - **状态**：完成。GUI 设置页的提示音开关+试听在新 GUI 迭代中一并接入
   （sidecar 注入 `CONVERT_COMPLETE_SOUND=off`）。
 - 备注：为一次性转码向 .venv 装了 soundfile（开发工具，非运行时依赖）。
+
+## 病例 041｜TeX 导出 43 编译错误连环修 — 实体残骸 / 表格公式扁平 / 编号叠加
+
+- **现象**：高数（公式密集）tex 导出 xelatex 43 错、267 缺字符警告；表格内
+  公式扁平成 unicode 文本；md/tex 复制到输出目录后图片断链。
+- **根因链**（五层）：
+  1. stage3_epub `_strip_alignment_amp` 无差别剥 `&` → HTML 实体被腰斩
+     （`&#x27;`→`#x27;`、`&gt;`→`gt;`）混进 alttext 与 MathML 树——
+     **EPUB 公式同样受害**（导数公式表渲染出 `#x27;` 残骸）。
+  2. 脚注锚定在最终 HTML 上作业，把 `<a noteref>` 写进 math 的 alttext
+     属性值 → 导出 tex 时 `#` 炸数学模式。
+  3. 导出层 `_walk` 表格单元格用 `get_text()` → 单元格里的 `<math>` 被
+     压成扁平 unicode（`$(x^{\mu})'=\mu x^{\mu-1}$` → `(xμ)′=μxμ−1`）。
+  4. 模型把 unicode 数学符号（λ、₀、′、①）直接写进 $…$；xelatex 数学
+     字体（lmroman）无字形 → 满屏 Missing character。
+  5. `\lambdax` 希腊命令粘连字母（unicode 映射与模型笔误同源）；
+     `\overparen`/`\xlongequal` 缺宏包；`\chapter` 自动编号与书自带编号
+     叠加 → 页眉"第二章 第二章"。
+- **修补点**：stage3_epub `_sanitize_math_input`（实体反转义**先于**剥 &；
+  反斜杠粘连 CJK `\、`；希腊命令粘连补空格）；stage3_export `_clean_latex`
+  （剥泄漏标签+实体残骸修复）、表格单元格改走内联通道（alttext 存活）、
+  `_tex_math_sanitize` unicode 映射表（含圈码①-㉟/数学粗体字母/修饰上标
+  长尾）、`_tex_escape` 文本模式同步扩展、preamble +extarrows+yhmath、
+  标题全改星号命令+手动 addcontentsline（书自身编号为准）、
+  `export_book` 共享 images/ 随产物交付、`export_markdown` 分章自含
+  `<书名>_md/` 目录。
+- **回归**：tests 13 导出用例+全链绿；高数 tex 编译 **43→0 错、
+  缺字符 267→0**、634 页；EPUB QC anchor 56/56、formula_artifacts 0、
+  页眉单编号；栅格化抽页亲读公式/表格排版正常。
+- **状态**：已修复。**挂账**：stage3_epub 脚注锚定应避开 alttext 属性
+  上下文（EPUB 侧 alttext 兜底字符串残留 `<a>`，MathML 显示不受影响）。

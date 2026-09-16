@@ -90,6 +90,113 @@ def _text_of(node) -> str:
     return node.get_text() if hasattr(node, "get_text") else str(node)
 
 
+_ENTITY_WRECK_RE = re.compile(r"&#(x[0-9A-Fa-f]+|\d+);|#(x[0-9A-Fa-f]{2}|\d{2,3});")
+_NAMED_WRECK_RE = re.compile(r"(gt|lt|amp|quot|apos);")
+_NAMED_WRECK_MAP = {"gt": ">", "lt": "<", "amp": "&", "quot": '"', "apos": "'"}
+_TAG_RE = re.compile(r"<[^>]+>")
+_NONASCII_RUN_RE = re.compile(r"[^\x00-\x7f]+")
+
+# 数学体 unicode → LaTeX 映射（模型常把 λ/−/₀ 直接写进 $…$；xelatex 数学
+# 字体没这些字形。EPUB 侧 latex2mathml 自带 unicode 表，无需此映射）
+_TEX_MATH_UNICODE = {
+    "−": "-", "–": "-", "―": "-",
+    "×": r"\times", "÷": r"\div", "±": r"\pm", "∓": r"\mp",
+    "≤": r"\leq", "≥": r"\geq", "≠": r"\neq", "≈": r"\approx", "≡": r"\equiv",
+    "∼": r"\sim", "∝": r"\propto", "∞": r"\infty", "∂": r"\partial", "∇": r"\nabla",
+    "∈": r"\in", "∉": r"\notin", "∋": r"\ni", "⊂": r"\subset", "⊃": r"\supset",
+    "⊆": r"\subseteq", "⊇": r"\supseteq", "∪": r"\cup", "∩": r"\cap",
+    "∅": r"\emptyset", "∀": r"\forall", "∃": r"\exists", "¬": r"\neg",
+    "∧": r"\wedge", "∨": r"\vee", "⊕": r"\oplus", "⊗": r"\otimes", "⊙": r"\odot",
+    "→": r"\to", "←": r"\leftarrow", "↦": r"\mapsto", "↔": r"\leftrightarrow",
+    "⇒": r"\Rightarrow", "⇐": r"\Leftarrow", "⇔": r"\Leftrightarrow",
+    "↑": r"\uparrow", "↓": r"\downarrow", "↗": r"\nearrow", "↘": r"\searrow",
+    "⟨": r"\langle", "⟩": r"\rangle", "⊥": r"\perp", "∥": r"\parallel",
+    "∑": r"\sum", "∏": r"\prod", "∫": r"\int", "∮": r"\oint",
+    "√": r"\surd", "·": r"\cdot", "⋯": r"\cdots", "…": r"\ldots",
+    "∘": r"\circ", "∠": r"\angle", "°": r"^\circ",
+    "′": "'", "″": "''", "‴": "'''", "‵": "`",
+    "ℏ": r"\hbar", "ℓ": r"\ell", "ℜ": r"\Re", "ℑ": r"\Im", "ℵ": r"\aleph",
+    "ℝ": r"\mathbb{R}", "ℤ": r"\mathbb{Z}", "ℕ": r"\mathbb{N}",
+    "ℚ": r"\mathbb{Q}", "ℂ": r"\mathbb{C}",
+    "⁰": "^0", "¹": "^1", "²": "^2", "³": "^3", "⁴": "^4", "⁵": "^5",
+    "⁶": "^6", "⁷": "^7", "⁸": "^8", "⁹": "^9", "ⁿ": "^n", "⁺": "^+", "⁻": "^-",
+    "₀": "_0", "₁": "_1", "₂": "_2", "₃": "_3", "₄": "_4", "₅": "_5",
+    "₆": "_6", "₇": "_7", "₈": "_8", "₉": "_9", "₊": "_+", "₋": "_-", "₌": "_=",
+}
+_TEX_MATH_UNICODE.update({c: "\\" + n for c, n in zip(
+    "αβγδεζηθικλμνξπρστυφχψω",
+    "alpha beta gamma delta varepsilon zeta eta theta iota kappa lambda mu "
+    "nu xi pi rho sigma tau upsilon phi chi psi omega".split())})
+_TEX_MATH_UNICODE.update({c: "\\" + n for c, n in zip(
+    "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΠΡΣΤΥΦΧΨΩ",
+    "Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu "
+    "Nu Xi Pi Rho Sigma Tau Upsilon Phi Chi Psi Omega".split())})
+_TEX_MATH_UNICODE.update({"ϵ": r"\epsilon", "ϕ": r"\varphi", "ϑ": r"\vartheta",
+                          "ς": r"\varsigma", "ϱ": r"\varrho", "ϖ": r"\varpi"})
+# 长尾补齐：圈码进 \textcircled（数学字体无圈码字形）；数学粗体字母数字；
+# 斜体不等号、修饰字母上标、华氏度
+_TEX_MATH_UNICODE.update({chr(0x2460 + i): f"\\text{{\\textcircled{{{i + 1}}}}}"
+                          for i in range(20)})
+_TEX_MATH_UNICODE.update({chr(0x3251 + i): f"\\text{{\\textcircled{{{21 + i}}}}}"
+                          for i in range(14)})
+_TEX_MATH_UNICODE.update({chr(0x1D400 + i): f"\\mathbf{{{chr(65 + i)}}}"
+                          for i in range(26)})
+_TEX_MATH_UNICODE.update({chr(0x1D41A + i): f"\\mathbf{{{chr(97 + i)}}}"
+                          for i in range(26)})
+_TEX_MATH_UNICODE.update({chr(0x1D7CE + i): f"\\mathbf{{{i}}}"
+                          for i in range(10)})
+_TEX_MATH_UNICODE.update({
+    "⩽": r"\leqslant", "⩾": r"\geqslant", "℉": r"^\circ\mathrm{F}", "℃": r"^\circ\mathrm{C}",
+    "ˣ": "^x", "ʸ": "^y", "ʳ": "^r", "ˡ": "^l", "ˢ": "^s", "ʰ": "^h",
+    "ᵗ": "^t", "ᵏ": "^k", "ᵐ": "^m", "ⁱ": "^i",
+})
+
+
+_GREEK_GLUE_RE = re.compile(
+    r"\\(alpha|beta|gamma|delta|varepsilon|epsilon|zeta|eta|theta|vartheta|iota|"
+    r"kappa|lambda|mu|nu|xi|pi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|"
+    r"chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)"
+    r"(?=[a-zA-Z])")
+
+
+def _tex_math_sanitize(s: str) -> str:
+    """数学体出闸：希腊命令粘连字母补空格（\\lambdax→\\lambda x，unicode 映射
+    与模型笔误同源）→ unicode 映射（λ→\\lambda、₀→_0、′→'，命令后紧跟字母
+    同样补空格）→ 剩余非 ASCII 连续段包 \\text{}（圈码①/CJK 标点走 ctex 字体）。"""
+    s = _GREEK_GLUE_RE.sub(r"\\\1 ", s)
+    out = []
+    for i, ch in enumerate(s):
+        rep = _TEX_MATH_UNICODE.get(ch)
+        if rep is None:
+            out.append(ch)
+            continue
+        nxt = s[i + 1] if i + 1 < len(s) else ""
+        if rep[-1].isalpha() and nxt.isalpha():
+            rep += " "
+        out.append(rep)
+    s = "".join(out)
+    return _NONASCII_RUN_RE.sub(lambda m: f"\\text{{{m.group(0)}}}", s)
+
+
+def _clean_latex(s: str) -> str:
+    """alttext 出闸清洗：实体解码 → 实体残骸修复（上游转换器吃掉 & 留下
+    #x27; / gt; 之类）→ 剥泄漏的 HTML 标签（脚注锚定可能写进 alttext）。
+
+    失败方向：只删可证明是标签/残骸的片段，其余原样保留。"""
+    s = _html.unescape(s)
+    s = _NAMED_WRECK_RE.sub(lambda m: _NAMED_WRECK_MAP[m.group(1)], s)
+
+    def _wreck(m):
+        g = m.group(1) or m.group(2)
+        try:
+            return chr(int(g[1:], 16) if g.startswith("x") else int(g))
+        except (ValueError, OverflowError):
+            return m.group(0)
+
+    s = _ENTITY_WRECK_RE.sub(_wreck, s)
+    return _TAG_RE.sub("", s)
+
+
 def _walk(node, events: list, in_footnotes: bool = False) -> None:
     """把章级 HTML 走成事件流：[("h", level, text)]/[("p", html)]/[("math", display, latex)]/
     [("img", src, alt)]/[("table", rows)]/[("fnref", fid, label)]/[("fndef", fid, text)]/
@@ -114,15 +221,19 @@ def _walk(node, events: list, in_footnotes: bool = False) -> None:
             else:
                 events.append(("orphanfn", _text_of(p).strip()))
     elif name == "math":
-        latex = _html.unescape(node.get("alttext", ""))
+        latex = _clean_latex(node.get("alttext", ""))
         display = node.get("display") == "block"
         events.append(("math", display, latex))
     elif name == "img":
         events.append(("img", node.get("src", ""), node.get("alt", "")))
     elif name == "table":
+        # 单元格走内联通道：$...$/math 提取 alttext（否则 get_text 把公式
+        # 压成扁平 unicode——高数导数公式表实测），fnref 一并占位
         rows = []
         for tr in node.find_all("tr"):
-            rows.append([_text_of(td).strip() for td in tr.find_all(["th", "td"])])
+            rows.append([_inline_html_to_text(
+                "".join(str(c) for c in td.children)).strip()
+                for td in tr.find_all(["th", "td"])])
         if rows:
             events.append(("table", rows))
     elif name in ("p", "blockquote", "li"):
@@ -142,7 +253,7 @@ def _inline_html_to_text(s: str) -> str:
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(s, "html.parser")
     for m in soup.find_all("math"):
-        latex = _html.unescape(m.get("alttext", ""))
+        latex = _clean_latex(m.get("alttext", ""))
         kind = "MATHB" if m.get("display") == "block" else "MATHI"
         m.replace_with(f"\x00{kind}\x00{latex}\x00")
     for a in soup.find_all("a"):
@@ -178,9 +289,9 @@ def _emit_tokens_tex(txt: str, fns: dict[str, str]) -> str:
             out.append(_tex_escape(parts[i]))
             kind, body = parts[i + 1], parts[i + 2]
             if kind == "MATHI":
-                out.append(f"${body}$")
+                out.append(f"${_tex_math_sanitize(body)}$")
             elif kind == "MATHB":
-                out.append(f"\n\\[{body}\\]\n")
+                out.append(f"\n\\[{_tex_math_sanitize(body)}\\]\n")
             else:
                 out.append(f"\\footnote{{{_tex_escape(fns.get(body, ''))}}}")
             i += 3
@@ -250,10 +361,12 @@ def render_unit_md(unit: dict, dialect: str = "gfm") -> str:
             ncol = max(len(r) for r in rows)
             rows = [(r + [""] * ncol)[:ncol] for r in rows]
             out.append("")
-            out.append("| " + " | ".join(_md_escape_cell(c) for c in rows[0]) + " |")
+            out.append("| " + " | ".join(_md_escape_cell(_emit_tokens_md(c))
+                                          for c in rows[0]) + " |")
             out.append("|" + "---|" * ncol)
             for r in rows[1:]:
-                out.append("| " + " | ".join(_md_escape_cell(c) for c in r) + " |")
+                out.append("| " + " | ".join(_md_escape_cell(_emit_tokens_md(c))
+                                             for c in r) + " |")
             out.append("")
         elif ev[0] == "fndef":
             fndefs.append((ev[1], ev[2]))
@@ -276,11 +389,29 @@ def render_unit_md(unit: dict, dialect: str = "gfm") -> str:
 # TeX 发射器
 # ---------------------------------------------------------------------------
 
-_TEX_SPECIAL = str.maketrans({
+_TEX_SPECIAL_BASE = {
     "#": r"\#", "$": r"\$", "%": r"\%", "&": r"\&",
     "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}",
     "^": r"\textasciicircum{}", "\\": r"\textbackslash{}",
-})
+}
+# 文本模式 unicode 兜底：数学命令类包 $…$，上下标补 {} 原子，罗马数字转 ASCII，
+# 圈码用 \textcircled（lmroman 字体没这些字形，不映射就是满屏缺字符警告）
+_TEX_TEXT_EXTRA: dict[str, str] = {}
+for _ch, _cmd in _TEX_MATH_UNICODE.items():
+    if _cmd.startswith("\\"):
+        _TEX_TEXT_EXTRA[_ch] = f"${_cmd}$"
+    elif _cmd.startswith(("^", "_")):
+        _TEX_TEXT_EXTRA[_ch] = f"${{}}{_cmd}$"
+    elif _cmd == "-":
+        _TEX_TEXT_EXTRA[_ch] = "--"
+    else:
+        _TEX_TEXT_EXTRA[_ch] = _cmd
+_TEX_TEXT_EXTRA.update({chr(0x2460 + i): f"\\textcircled{{{i + 1}}}"
+                        for i in range(20)})
+_TEX_TEXT_EXTRA.update({c: t for c, t in zip(
+    "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ",
+    ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"])})
+_TEX_SPECIAL = str.maketrans({**_TEX_SPECIAL_BASE, **_TEX_TEXT_EXTRA})
 _TEX_LEVEL = {1: "chapter", 2: "section", 3: "subsection", 4: "subsubsection", 5: "paragraph"}
 
 
@@ -306,10 +437,15 @@ def render_unit_tex(unit: dict) -> str:
             fns[ev[1]] = ev[2]
         elif ev[0] == "orphanfn":
             orphans.append(ev[1])
+    # 标题携带书自身编号（"第二章 导数与微分"），一律星号命令+手动入 TOC，
+    # 杜绝自动编号叠加成"第二章 第二章"（页眉/目录双重编号实测）
     if unit.get("kind") == "divider":
-        out.append(f"\\part{{{_tex_escape(unit['title'])}}}\n")
+        t = _tex_escape(unit['title'])
+        out.append(f"\\part*{{{t}}}\n\\addcontentsline{{toc}}{{part}}{{{t}}}\n")
     else:
-        out.append(f"\\chapter{{{_tex_escape(unit['title'])}}}\n")
+        t = _tex_escape(unit['title'])
+        out.append(f"\\chapter*{{{t}}}\n\\addcontentsline{{toc}}{{chapter}}{{{t}}}\n"
+                   f"\\markboth{{{t}}}{{}}\n")
 
     def inline(s: str) -> str:
         return _emit_tokens_tex(_inline_html_to_text(s), fns)
@@ -320,7 +456,11 @@ def render_unit_tex(unit: dict) -> str:
             if re.sub(r"\s+", "", ev[2]) == title_key:
                 continue
             cmd = _TEX_LEVEL.get(min(ev[1], 5), "paragraph")
-            out.append(f"\\{cmd}{{{_tex_escape(ev[2])}}}\n")
+            t = _tex_escape(ev[2])
+            line = f"\\{cmd}*{{{t}}}\n"
+            if cmd in ("section", "subsection"):
+                line += f"\\addcontentsline{{toc}}{{{cmd}}}{{{t}}}\n"
+            out.append(line)
         elif ev[0] == "p":
             t = inline(ev[1]).strip()
             if t:
@@ -331,7 +471,8 @@ def render_unit_tex(unit: dict) -> str:
             out.append("\\begin{itemize}\n\\item " + inline(ev[1]).strip() + "\n\\end{itemize}\n")
         elif ev[0] == "math":
             _, display, latex = ev
-            out.append(f"\n\\[{latex}\\]\n" if display else f"${latex}$")
+            out.append(f"\n\\[{_tex_math_sanitize(latex)}\\]\n" if display
+                       else f"${_tex_math_sanitize(latex)}$")
         elif ev[0] == "img":
             src, alt = ev[1], ev[2]
             cap = f"\\caption{{{_tex_escape(alt)}}}" if alt else ""
@@ -343,10 +484,10 @@ def render_unit_tex(unit: dict) -> str:
             rows = [(r + [""] * ncol)[:ncol] for r in rows]
             spec = "l" * ncol
             out.append("\\begin{longtable}{" + spec + "}\\toprule")
-            out.append(" & ".join(f"\\textbf{{{_tex_escape(c)}}}" for c in rows[0])
+            out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns)}}}" for c in rows[0])
                        + " \\\\ \\midrule")
             for r in rows[1:]:
-                out.append(" & ".join(_tex_escape(c) for c in r) + " \\\\")
+                out.append(" & ".join(_emit_tokens_tex(c, fns) for c in r) + " \\\\")
             out.append("\\bottomrule\\end{longtable}\n")
     if orphans:
         # 未锚定尾注：章末显式注释列表（内容不丢）
@@ -420,6 +561,9 @@ _TEX_PREAMBLE_ZH = r"""% !TeX program = xelatex
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{longtable}
+\usepackage{extarrows}
+\usepackage{yhmath}
+\providecommand{\overparen}[1]{\wideparen{#1}}
 \usepackage{hyperref}
 """
 _TEX_PREAMBLE_EN = r"""% !TeX program = xelatex
@@ -428,6 +572,9 @@ _TEX_PREAMBLE_EN = r"""% !TeX program = xelatex
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{longtable}
+\usepackage{extarrows}
+\usepackage{yhmath}
+\providecommand{\overparen}[1]{\wideparen{#1}}
 \usepackage{hyperref}
 """
 

@@ -174,6 +174,25 @@ def _strip_alignment_amp(latex: str) -> str:
     return latex.replace("\x00AMP\x00", "\\&")
 
 
+_CS_NONASCII_RE = re.compile(r"\\(?=[^\x00-\x7f])")
+_GREEK_GLUE_RE = re.compile(
+    r"\\(alpha|beta|gamma|delta|varepsilon|epsilon|zeta|eta|theta|vartheta|iota|"
+    r"kappa|lambda|mu|nu|xi|pi|rho|varrho|sigma|varsigma|tau|upsilon|phi|varphi|"
+    r"chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)"
+    r"(?=[a-zA-Z])")
+
+
+def _sanitize_math_input(latex: str) -> str:
+    """mathmlify 入料清洗：先反转义 HTML 实体（&#x27;→'、&gt;→>——上游 HTML
+    传输的工件；必须在剥 & 之前做，否则实体残骸 #x27;/gt; 混进 alttext 与
+    MathML——高数导数公式表实测），再剥反斜杠粘连 CJK 的笔误（\\、→、），
+    以及希腊命令粘连字母补空格（\\lambdax→\\lambda x）。"""
+    import html as _h
+    latex = _h.unescape(latex)
+    latex = _CS_NONASCII_RE.sub("", latex)
+    return _GREEK_GLUE_RE.sub(r"\\\1 ", latex)
+
+
 def _latex_to_mathml(latex: str, display: bool) -> str:
     """LaTeX → MathML（失败返回 None）。"""
     try:
@@ -209,7 +228,7 @@ def _mathmlify(html_text: str) -> str:
         display = m.group(1) is not None
         if not latex:
             return m.group(0)
-        mathml = _latex_to_mathml(latex, display)
+        mathml = _latex_to_mathml(_sanitize_math_input(latex), display)
         if mathml is not None:
             return mathml
         return f'<code class="latex">{_escape_attr(latex)}</code>'
@@ -634,7 +653,7 @@ def _render_block_to_html(block: dict, images_dir: str,
         # 兼容 latex/text 字段形态：有 $…$ 定界走 MathML，纯 LaTeX 源码也尝试转换
         if "$" in latex:
             return f'<p class="no_indent">{_mathmlify(latex)}</p>'
-        mathml = _latex_to_mathml(latex, True)
+        mathml = _latex_to_mathml(_sanitize_math_input(latex), True)
         if mathml is not None:
             return f'<p class="no_indent">{mathml}</p>'
         return f'<p class="no_indent"><code class="latex">{_escape_attr(latex)}</code></p>'

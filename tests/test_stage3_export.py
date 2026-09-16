@@ -54,7 +54,8 @@ class TestMarkdown(unittest.TestCase):
 class TestTex(unittest.TestCase):
     def test_basic_shapes(self):
         tex = render_unit_tex(_unit())
-        self.assertIn("\\chapter{第一章 测试}", tex)
+        self.assertIn("\\chapter*{第一章 测试}", tex)   # 星号命令+手动入 TOC（标题自带书编号）
+        self.assertIn("\\addcontentsline{toc}{chapter}{第一章 测试}", tex)
         self.assertIn("$E=mc^2$", tex)
         self.assertIn("\\[H = \\sum_i p_i \\dot q_i - L \\qquad (3.47)\\]", tex)
         self.assertIn("\\footnote{参见《某书》第 7 页。}", tex)          # 内联脚注
@@ -92,6 +93,36 @@ class TestMarkdownLayout(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = export_markdown([_unit()], Path(td), "书", "我的书", "", dialect="pandoc")
             self.assertTrue(out[0].read_text(encoding="utf-8").startswith("---\ntitle: 我的书"))
+
+
+_TABLE_MATH_HTML = """
+<h2>第二章 微分</h2>
+<table><thead><tr><th>导数公式</th></tr></thead>
+<tbody><tr><td><math alttext="(x^{\\mu})#x27;=\\mu x^{\\mu-1}" display="inline"></math> 链式</td></tr></tbody></table>
+<p>公式尾脚注 <math alttext="E=1\\;&lt;a href=&quot;#fn_1&quot;&gt;&lt;sup&gt;①&lt;/sup&gt;&lt;/a&gt;\\;," display="block"></math></p>
+"""
+
+
+class TestCleanLatex(unittest.TestCase):
+    def test_alttext_sanitize(self):
+        from stage3_export import _clean_latex
+        # 实体残骸修复 + 泄漏标签剥除 + 不误杀正常 LaTeX
+        self.assertEqual(_clean_latex("(x^{\\mu})#x27;=\\mu"), "(x^{\\mu})'=\\mu")
+        self.assertEqual(_clean_latex('E=1\\;<a href="#fn_1"><sup>①</sup></a>\\;,'),
+                         "E=1\\;①\\;,")
+        self.assertEqual(_clean_latex("\\frac{1}{2}"), "\\frac{1}{2}")
+
+    def test_table_cell_math_survives(self):
+        unit = {"kind": "chapter", "title": "第二章 微分",
+                "parts": [_TABLE_MATH_HTML], "subs": []}
+        md = render_unit_md(unit)
+        self.assertIn("$(x^{\\mu})'=\\mu x^{\\mu-1}$", md)  # 单元格公式不再扁平
+        self.assertNotIn("#x27", md)
+        self.assertIn("$$E=1\\;①\\;,$$", md)                # alttext 标签剥除
+        tex = render_unit_tex(unit)
+        self.assertIn("$(x^{\\mu})'=\\mu x^{\\mu-1}$", tex)
+        self.assertNotIn("#x27", tex)
+        self.assertIn("\\text{\\textcircled{1}}", tex)  # 数学模式圈码走 \textcircled
 
 
 class TestExportBookLang(unittest.TestCase):
