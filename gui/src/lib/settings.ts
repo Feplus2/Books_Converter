@@ -123,11 +123,15 @@ export function activatedModels(s: Settings, visionOnly: boolean) {
 // ── sidecar 环境变量/CLI 参数装配（空值不注入，.env 兜底） ──
 
 /** 思考档可见性守卫：仅支持思考参数的端点才暴露该控件（vlm_client.py 对未收录端点不下发思考参数）。
- *  未选模型（.env 兜底）→ true（显示，保持默认行为）；未知/不支持的提供商 → false（不暴露）。 */
-export function reasoningSupported(modelRef: string): boolean {
+ *  未选模型（.env 兜底）→ true（显示，保持默认行为）；
+ *  预设提供商查 supportsReasoning 标记；孤儿/自定义按 baseUrl host 对齐 vlm_client.py 的分派口径。 */
+export function reasoningSupported(s: Settings, modelRef: string): boolean {
   const ref = splitModelRef(modelRef);
   if (!ref) return true;
-  return presetOf(ref.providerId)?.supportsReasoning === true;
+  const preset = presetOf(ref.providerId);
+  if (preset) return preset.supportsReasoning === true;
+  const host = (findProvider(s, ref.providerId)?.baseUrl ?? "").toLowerCase();
+  return ["z.ai", "bigmodel", "deepseek", "dashscope"].some((h) => host.includes(h));
 }
 
 export function buildEnv(s: Settings, o: ConvertOptions): Record<string, string> {

@@ -5,6 +5,7 @@ import {
   type ConvertOptions,
   type Settings,
 } from "./settings";
+import { S } from "./strings";
 
 export type SettingsSection = "parse" | "providers" | "options";
 
@@ -15,10 +16,10 @@ export type PrecheckResult =
 export function precheckTask(o: ConvertOptions, s: Settings): PrecheckResult {
   if (o.mode === "rule") {
     if (o.ruleEngine === "mineru" && !s.ocr.mineruToken.trim()) {
-      return { ok: false, missing: "MinerU Token", section: "parse" };
+      return { ok: false, missing: S.precheck.mineruToken, section: "parse" };
     }
     if (o.ruleEngine === "paddleocr" && !s.ocr.paddleocrToken.trim()) {
-      return { ok: false, missing: "PaddleOCR Token", section: "parse" };
+      return { ok: false, missing: S.precheck.paddleocrToken, section: "parse" };
     }
     // 后处理模型：选了才查（未选走 .env 兜底，前端无从校验）
     const post = splitModelRef(o.postModel);
@@ -27,7 +28,7 @@ export function precheckTask(o: ConvertOptions, s: Settings): PrecheckResult {
       if (!p || !p.apiKey.trim()) {
         return {
           ok: false,
-          missing: `后处理模型 ${post.modelId} 的 API Key`,
+          missing: S.precheck.postModelKey(post.modelId),
           section: "providers",
           providerId: post.providerId,
         };
@@ -39,13 +40,13 @@ export function precheckTask(o: ConvertOptions, s: Settings): PrecheckResult {
   // VLM 模式：多模态模型必选，所属提供商 key 必填
   const vlm = splitModelRef(o.vlmModel);
   if (!vlm) {
-    return { ok: false, missing: "多模态模型（未选择）", section: "providers" };
+    return { ok: false, missing: S.precheck.vlmNoModel, section: "providers" };
   }
   const p = findProvider(s, vlm.providerId);
   if (!p || !p.apiKey.trim()) {
     return {
       ok: false,
-      missing: `多模态模型 ${vlm.modelId} 的 API Key`,
+      missing: S.precheck.vlmModelKey(vlm.modelId),
       section: "providers",
       providerId: vlm.providerId,
     };

@@ -15,6 +15,7 @@ import { notify } from "../lib/notify";
 import { navigate } from "../lib/nav";
 import { S } from "../lib/strings";
 import { QueueItem } from "../components/QueueItem";
+import { EmptyState } from "../components/EmptyState";
 import { Select } from "../components/Select";
 import { Toggle } from "../components/Toggle";
 import { Tooltip } from "../components/Tooltip";
@@ -278,7 +279,7 @@ export function ConvertPage() {
             >
               {S.convert.vlmModelHint}
             </div>
-            {reasoningSupported(opts.vlmModel) ? (
+            {reasoningSupported(settings, opts.vlmModel) ? (
               <Field label={S.convert.reasoning}>
                 <Select
                   width={140}
@@ -451,9 +452,7 @@ export function ConvertPage() {
           ))}
         </div>
       ) : (
-        <div className="py-10 text-center text-xs" style={{ color: "var(--ink2)" }}>
-          {S.convert.queueEmpty}
-        </div>
+        <EmptyState kind="queue" />
       )}
     </div>
   );

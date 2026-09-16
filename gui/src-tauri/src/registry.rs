@@ -32,6 +32,11 @@ pub struct RegistryEntry {
     pub elapsed_s: f64,
     #[serde(default)]
     pub app_version: String,
+    /// v2 新增（老记录没有）：VLM 引擎当时的转写模型/思考档
+    #[serde(default)]
+    pub vlm_model: Option<String>,
+    #[serde(default)]
+    pub vlm_reasoning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +56,8 @@ pub struct RegistryItem {
     pub entry: RegistryEntry,
     pub files: Vec<ProductFile>,
     pub missing: bool,
+    /// 源 PDF 是否仍在原位置（「再次转换」按钮的可用性依据）
+    pub source_exists: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,8 +137,10 @@ pub fn read_registry(dirs: Vec<String>) -> Vec<RegistryItem> {
                 }
             }
             let missing = files.iter().any(|f| !f.exists);
+            let source_exists = !entry.source_pdf.is_empty() && Path::new(&entry.source_pdf).exists();
             items.push(RegistryItem {
                 registry_path: reg.to_string_lossy().into_owned(),
+                source_exists,
                 entry,
                 files,
                 missing,

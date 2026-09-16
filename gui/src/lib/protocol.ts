@@ -23,10 +23,3 @@ export function parsePipelineEvent(line: string): PipelineEvent | null {
     return null;
   }
 }
-
-export const STAGE_NAMES: Record<number, string> = {
-  1: "解析引擎",
-  2: "结构分析",
-  3: "翻译",
-  4: "EPUB/导出",
-};

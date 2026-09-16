@@ -27,6 +27,9 @@ export interface RegistryItem extends RegistryEntry {
   registry_path: string;
   files: ProductFile[];
   missing: boolean;
+  source_exists: boolean;
+  vlm_model?: string | null;
+  vlm_reasoning?: string | null;
 }
 
 export interface UnregisteredItem {

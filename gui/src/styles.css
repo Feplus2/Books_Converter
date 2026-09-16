@@ -208,6 +208,21 @@ input[type="number"]::-webkit-outer-spin-button {
   animation: page-in 150ms ease-out;
 }
 
+/* 「再次转换」入队高亮：主色光晕脉冲两拍后熄灭 */
+@keyframes queue-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+}
+.queue-flash {
+  animation: queue-flash 1s ease-in-out 2;
+  border-color: var(--accent) !important;
+}
+
 /* 进度条：细轨 + 主色填充 */
 .progress-track {
   height: 4px;

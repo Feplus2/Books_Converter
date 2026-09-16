@@ -1,5 +1,6 @@
 // 自绘下拉：按钮 + 浮层列表（hover 主色光晕、选中勾/高亮、disabled 灰显+原因徽标，
 // ESC/外点/滚动/缩放关闭），完全替代原生 <select>
+import { S } from "../lib/strings";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
@@ -152,7 +153,7 @@ export function Select({
           })}
           {!options.length && (
             <div className="px-3 py-4 text-center text-xs" style={{ color: "var(--ink2)" }}>
-              {placeholder || "无可选项"}
+              {placeholder || S.select.emptyOptions}
             </div>
           )}
         </div>

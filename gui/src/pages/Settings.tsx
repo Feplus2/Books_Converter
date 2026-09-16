@@ -576,7 +576,7 @@ function OptionsSection() {
           })}
         </div>
         <div className="flex items-center gap-2 pt-2 text-xs" style={{ color: "var(--ink2)" }}>
-          Ctrl + / Ctrl − / Ctrl+滚轮缩放，Ctrl 0 复原（当前 {Math.round(settings.appearance.zoom * 100)}%）
+          {S.settings.zoomHint(Math.round(settings.appearance.zoom * 100))}
           {settings.appearance.zoom !== 1 && (
             <button
               className="btn btn-ghost cursor-pointer text-xs"
@@ -585,7 +585,7 @@ function OptionsSection() {
                 settingsStore.update({ appearance: { ...settings.appearance, zoom: 1 } })
               }
             >
-              重置 100%
+              {S.settings.zoomReset}
             </button>
           )}
         </div>

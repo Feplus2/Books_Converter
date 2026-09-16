@@ -1,24 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { migrate, reasoningSupported } from "../settings";
+import { defaultSettings, migrate, reasoningSupported } from "../settings";
 import { PROVIDER_PRESETS } from "../providers";
 
 describe("reasoningSupported 思考档可见性守卫", () => {
   it("支持思考参数的端点（bigmodel/deepseek/dashscope）→ true", () => {
-    expect(reasoningSupported("bigmodel/glm-5.3-flash")).toBe(true);
-    expect(reasoningSupported("deepseek/deepseek-v4-pro")).toBe(true);
-    expect(reasoningSupported("dashscope/qwen3.8-flash")).toBe(true);
+    const s = defaultSettings();
+    expect(reasoningSupported(s, "bigmodel/glm-5.3-flash")).toBe(true);
+    expect(reasoningSupported(s, "deepseek/deepseek-v4-pro")).toBe(true);
+    expect(reasoningSupported(s, "dashscope/qwen3.8-flash")).toBe(true);
   });
 
   it("其他提供商（openai/moonshot/custom…）→ false（UI 不暴露）", () => {
-    expect(reasoningSupported("openai/gpt-5")).toBe(false);
-    expect(reasoningSupported("moonshot/kimi-k3")).toBe(false);
-    expect(reasoningSupported("custom/whatever")).toBe(false);
+    const s = defaultSettings();
+    expect(reasoningSupported(s, "openai/gpt-5")).toBe(false);
+    expect(reasoningSupported(s, "moonshot/kimi-k3")).toBe(false);
+    expect(reasoningSupported(s, "custom/whatever")).toBe(false);
     // 已移除的 Anthropic 预设：未收录 id 同样 false（不暴露=不动作）
-    expect(reasoningSupported("anthropic/claude-opus-5")).toBe(false);
+    expect(reasoningSupported(s, "anthropic/claude-opus-5")).toBe(false);
+  });
+
+  it("孤儿提供商按 baseUrl host 判定（对齐 vlm_client.py 分派）", () => {
+    const s = defaultSettings();
+    s.providers = [
+      { id: "zai", baseUrl: "https://api.z.ai/api/paas/v4", apiKey: "k", enabled: true, models: [] },
+      { id: "mine", baseUrl: "https://my-gateway.example.com/v1", apiKey: "k", enabled: true, models: [] },
+    ];
+    expect(reasoningSupported(s, "zai/glm-5.3-flash")).toBe(true);
+    expect(reasoningSupported(s, "mine/any-model")).toBe(false);
   });
 
   it("未选模型（.env 兜底）→ true（保持默认行为）", () => {
-    expect(reasoningSupported("")).toBe(true);
+    expect(reasoningSupported(defaultSettings(), "")).toBe(true);
   });
 
   it("预设表 sanity：默认列表 10 家，无 z.ai / anthropic", () => {

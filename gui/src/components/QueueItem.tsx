@@ -54,7 +54,7 @@ export function QueueItem({ task }: { task: QueueTask }) {
   const cancellable = task.status === "queued" || task.status === "running";
 
   return (
-    <div className="card lift p-3">
+    <div className={`card lift p-3${task.highlight ? " queue-flash" : ""}`}>
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -77,7 +77,7 @@ export function QueueItem({ task }: { task: QueueTask }) {
           )}
           {task.status === "running" && task.stageName && (
             <div className="mt-1 text-xs" style={{ color: "var(--ink2)" }}>
-              阶段 {task.stage}/{task.stagesTotal} · {task.stageName}
+              {S.convert.stageProgress(task.stage ?? 0, task.stagesTotal, task.stageName)}
             </div>
           )}
           {task.stalled && task.status === "running" && (
@@ -131,7 +131,7 @@ export function QueueItem({ task }: { task: QueueTask }) {
               [{S.convert.techDetail}] {task.errorDetail}
             </div>
           )}
-          {task.logs.length ? task.logs.join("\n") : "（暂无日志）"}
+          {task.logs.length ? task.logs.join("\n") : S.convert.noLogs}
         </div>
       )}
     </div>

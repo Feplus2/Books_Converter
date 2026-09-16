@@ -10,13 +10,18 @@ import {
   FolderSymlink,
   ListX,
   RefreshCw,
+  RotateCcw,
   Search,
   X,
 } from "lucide-react";
 import type { ProductFile, RegistryItem, UnregisteredItem } from "../lib/registry";
-import { settingsStore, useSettings } from "../lib/settings";
+import { settingsStore, useSettings, type Settings } from "../lib/settings";
+import { buildReconvertOptions } from "../lib/reconvert";
+import { queueStore } from "../lib/queue";
+import { navigate } from "../lib/nav";
 import { S, formatElapsed } from "../lib/strings";
 import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
 import { ProductCard, fmtSize, fmtTime } from "../components/ProductCard";
 import { Select } from "../components/Select";
 import { Tooltip } from "../components/Tooltip";
@@ -24,6 +29,49 @@ import { Tooltip } from "../components/Tooltip";
 type Detail =
   | { kind: "registered"; item: RegistryItem }
   | { kind: "unregistered"; item: UnregisteredItem };
+
+/** 「再次转换」：用记录重放选项推进队列（高亮），跳转换页 */
+function reconvertItem(item: RegistryItem, settings: Settings) {
+  const registryDir = item.registry_path.replace(/[\\/][^\\/]+$/, "");
+  const { options, modelFallback } = buildReconvertOptions(
+    {
+      engine: item.engine,
+      ocr: item.ocr,
+      translate: item.translate,
+      formats: item.formats,
+      vlm_model: item.vlm_model,
+      vlm_reasoning: item.vlm_reasoning,
+      registryDir,
+    },
+    settings,
+  );
+  queueStore.add([item.source_pdf], options, true);
+  navigate({ page: "convert" });
+  notify.success(S.library.toastReconvert);
+  if (modelFallback) {
+    notify.warning(S.library.toastModelFallback(item.vlm_model ?? ""));
+  }
+}
+
+function ReconvertButton({ item, settings }: { item: RegistryItem; settings: Settings }) {
+  const ok = item.source_exists;
+  return (
+    <Tooltip label={ok ? S.library.reconvertTooltip : S.library.sourceMissing(item.source_pdf)}>
+      <span className="inline-flex">
+        <button
+          className="icon-btn"
+          disabled={!ok}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (ok) reconvertItem(item, settings);
+          }}
+        >
+          <RotateCcw size={15} />
+        </button>
+      </span>
+    </Tooltip>
+  );
+}
 
 export function LibraryPage() {
   const settings = useSettings();
@@ -192,6 +240,7 @@ export function LibraryPage() {
               key={`${i.registry_path}:${i.ts}`}
               item={i}
               onOpen={() => setDetail({ kind: "registered", item: i })}
+              action={<ReconvertButton item={i} settings={settings} />}
             />
           ))}
           {filteredUnreg.map((i) => (
@@ -225,9 +274,7 @@ export function LibraryPage() {
           ))}
         </div>
       ) : (
-        <div className="py-16 text-center text-xs" style={{ color: "var(--ink2)" }}>
-          {S.library.empty}
-        </div>
+        <EmptyState kind="library" />
       )}
     </div>
   );
@@ -336,6 +383,7 @@ function DetailView({
   onChanged: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const settings = useSettings();
 
   if (detail.kind === "unregistered") {
     const i = detail.item;
@@ -353,8 +401,8 @@ function DetailView({
             {S.library.unregisteredHint}
           </div>
           <MetaRow label={S.library.metaFormats} value={i.fmt.toUpperCase()} />
-          <MetaRow label="大小" value={fmtSize(i.size)} />
-          <MetaRow label="路径" value={i.path} mono />
+          <MetaRow label={S.library.size} value={fmtSize(i.size)} />
+          <MetaRow label={S.library.path} value={i.path} mono />
           <div className="mt-4 flex gap-2">
             <button
               className="btn btn-primary"
@@ -393,25 +441,38 @@ function DetailView({
         <button className="btn btn-ghost" onClick={onBack}>
           <ArrowLeft size={14} /> {S.library.back}
         </button>
-        {confirming ? (
-          <span className="flex items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--warn)" }}>
-              {S.library.removeConfirm}
+        <span className="flex items-center gap-2">
+          <Tooltip label={item.source_exists ? S.library.reconvertTooltip : S.library.sourceMissing(item.source_pdf)}>
+            <span className="inline-flex">
+              <button
+                className="btn"
+                disabled={!item.source_exists}
+                onClick={() => reconvertItem(item, settings)}
+              >
+                <RotateCcw size={14} /> {S.library.reconvert}
+              </button>
             </span>
-            <button className="btn" style={{ color: "var(--err)" }} onClick={remove}>
-              {S.common.confirm}
-            </button>
-            <button className="btn btn-ghost" onClick={() => setConfirming(false)}>
-              {S.common.cancel}
-            </button>
-          </span>
-        ) : (
-          <Tooltip label={S.library.removeTooltip}>
-            <button className="icon-btn" onClick={() => setConfirming(true)}>
-              <ListX size={15} />
-            </button>
           </Tooltip>
-        )}
+          {confirming ? (
+            <span className="flex items-center gap-2">
+              <span className="text-xs" style={{ color: "var(--warn)" }}>
+                {S.library.removeConfirm}
+              </span>
+              <button className="btn" style={{ color: "var(--err)" }} onClick={remove}>
+                {S.common.confirm}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setConfirming(false)}>
+                {S.common.cancel}
+              </button>
+            </span>
+          ) : (
+            <Tooltip label={S.library.removeTooltip}>
+              <button className="icon-btn" onClick={() => setConfirming(true)}>
+                <ListX size={15} />
+              </button>
+            </Tooltip>
+          )}
+        </span>
       </div>
 
       <div className="card p-5">

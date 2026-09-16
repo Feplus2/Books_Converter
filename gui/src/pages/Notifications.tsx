@@ -1,8 +1,9 @@
 // 通知：独立页（与设置/手册同级）。历史列表全页展示，可清空/逐条删除；打开即全部已读
 import { useEffect } from "react";
-import { BellOff, CircleAlert, CircleCheck, Info, Trash2, TriangleAlert, X } from "lucide-react";
+import { CircleAlert, CircleCheck, Info, Trash2, TriangleAlert, X } from "lucide-react";
 import { notifyStore, useNotices, type NotifyLevel } from "../lib/notify";
 import { S } from "../lib/strings";
+import { EmptyState } from "../components/EmptyState";
 import { Tooltip } from "../components/Tooltip";
 
 const LEVEL_ICON: Record<NotifyLevel, { icon: typeof Info; color: string }> = {
@@ -38,13 +39,7 @@ export function NotificationsPage() {
         )}
       </div>
       {notices.length === 0 ? (
-        <div
-          className="card flex flex-col items-center gap-2 py-16 text-xs"
-          style={{ color: "var(--ink2)" }}
-        >
-          <BellOff size={20} />
-          {S.notify.empty}
-        </div>
+        <EmptyState kind="notifications" />
       ) : (
         <div className="flex flex-col gap-2 pb-8">
           {notices.map((n) => {

@@ -37,6 +37,7 @@ export interface QueueTask {
   lastEventAt: number;
   stalled: boolean;
   cancelAskedAt?: number;
+  highlight?: boolean; // 再次转换入队闪烁
 }
 
 type Listener = () => void;
@@ -58,7 +59,7 @@ class QueueStore {
     setInterval(() => this.checkStall(), 30_000);
   }
 
-  add(paths: string[], options: ConvertOptions) {
+  add(paths: string[], options: ConvertOptions, highlight = false) {
     for (const pdfPath of paths) {
       const name = pdfPath.split(/[\\/]/).pop() ?? pdfPath;
       this.tasks.push({
@@ -74,7 +75,15 @@ class QueueStore {
         logs: [],
         lastEventAt: Date.now(),
         stalled: false,
+        highlight,
       });
+    }
+    if (highlight) {
+      // 「再次转换」入队高亮：2s 后自动熄灭
+      setTimeout(() => {
+        this.tasks.forEach((t) => (t.highlight = false));
+        this.emit();
+      }, 2200);
     }
     this.emit();
   }
@@ -190,7 +199,7 @@ class QueueStore {
     task.stalled = false;
     switch (ev.type) {
       case "start":
-        task.logs.push(`开始转换《${ev.title}》（引擎 ${ev.engine}）`);
+        task.logs.push(S.convert.logStart(ev.title, ev.engine));
         break;
       case "progress":
         task.percent = ev.percent;
@@ -200,7 +209,7 @@ class QueueStore {
         break;
       case "stage_done":
         task.percent = ev.percent;
-        this.pushLog(task, `✓ 阶段 ${ev.stage}（${ev.stage_name}）完成，${ev.elapsed}s`);
+        this.pushLog(task, S.convert.logStageDone(ev.stage, ev.stage_name, ev.elapsed));
         break;
       case "log":
         this.pushLog(task, ev.line);
@@ -239,7 +248,7 @@ class QueueStore {
         task.status = "cancelled";
       } else {
         task.status = "error";
-        if (!task.error) task.error = `进程退出码 ${code ?? "未知"}`;
+        if (!task.error) task.error = S.convert.exitCode(code);
       }
     }
     if (task.status === "done") {
