@@ -359,8 +359,12 @@ def main():
             # （md/tex 含 images/；分章 md 目录内容平铺进格式目录）
             import shutil
 
+            deliver_name = _unique_book_dir(output_base, book_name)
+            if deliver_name != book_name:
+                logger.info(f"  输出目录撞名避让: {book_name}/ → {deliver_name}/")
+
             def _deliver(fmt: str, paths: list, with_images: bool) -> list[str]:
-                tgt = output_base / book_name / fmt
+                tgt = output_base / deliver_name / fmt
                 tgt.mkdir(parents=True, exist_ok=True)
                 delivered: list[str] = []
                 for p in paths:
@@ -440,6 +444,7 @@ def main():
             "v": 1,
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "title": book_name,
+            "dir_name": deliver_name,
             "source_pdf": str(pdf_path),
             "work_dir": str(work_dir),
             "engine": engine,
@@ -475,6 +480,38 @@ def main():
         if args.headless:
             emit_error(str(e) or _ErrCapture.first or "转换失败")
         raise
+
+
+_PRODUCT_DIRS = ("epub", "md", "tex")
+
+
+def _unique_book_dir(output_base: Path, book_name: str) -> str:
+    """输出目录撞名避让：已有交付产物（epub/md/tex 任一非空）→ 书名 (1)/(2)…
+
+    用户裁定：同本书重转到同一输出目录不得覆盖旧产物（引擎/选项可能不同，
+    旧产物有对照价值）。注意 work_dir 与交付根同为 <输出>/<书名>/——目录里
+    只有缓存（vlm_state.db/structure.json 等中间产物）不算撞名，重跑复用
+    缓存并照常交付；只有旧交付产物存在时才避让。
+    """
+    def _has_products(d: Path) -> bool:
+        for fmt in _PRODUCT_DIRS:
+            sub = d / fmt
+            try:
+                if sub.is_dir() and any(sub.iterdir()):
+                    return True
+            except OSError:
+                pass
+        return False
+
+    cand = output_base / book_name
+    if not cand.exists() or not _has_products(cand):
+        return book_name
+    for i in range(1, 1000):
+        name = f"{book_name} ({i})"
+        c = output_base / name
+        if not c.exists() or not _has_products(c):
+            return name
+    raise RuntimeError(f"无法为《{book_name}》分配输出目录（序号耗尽）")
 
 
 def _register_product(output_base: Path, record: dict) -> None:

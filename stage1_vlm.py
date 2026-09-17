@@ -182,6 +182,23 @@ def _norm_key(s: str) -> str:
     return re.sub(r"\s+", "", s or "")
 
 
+def _needs_image_extract(pj: dict, images_dir) -> bool:
+    """该页是否仍需图片提取：有 image 块缺 img_path，或 img_path 指向的 PNG 不在盘。
+
+    全部就位 → False：断点续跑/重放不重烧 bbox API（img_path 已回写 db 后，
+    回填的页面自带配对结果）。失败方向 = 不提取（图保持占位或既有配对），
+    绝不因误判重提取而打乱既有配对。
+    """
+    from pathlib import Path as _P
+    for b in pj.get("blocks", []):
+        if b.get("t") != "image":
+            continue
+        ip = b.get("img_path")
+        if not ip or not (_P(images_dir) / _P(str(ip)).name).exists():
+            return True
+    return False
+
+
 def _head_candidates(pages_json: dict[int, dict], toc_entries: list) -> set:
     """书眉候选（归一化）：高频 running_head 值（≥3 页）+ 目录 L1/L2 条目文本。"""
     cands = set()
@@ -414,34 +431,136 @@ def _merge_bare_number_titles(blocks: list[dict]) -> list[dict]:
     return out
 
 
-_MD_SEP_RE = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+_MD_SEP_RE = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+
+
+_SEP_CELL_RE = re.compile(r":?-{2,}:?")
+_SEP_ROW_TEXT_RE = re.compile(r"\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|")
+
+
+def _unsquash_pipe_table(text: str) -> str:
+    """单行压扁的管道表还原为多行形态：VLM 偶把整表挤成一行
+    （'| A | B |---|---| | 1 | 2 |'，FG p309 实测）。以分隔行文本（带管道
+    符整体匹配）为锚切头/体两区，避开行边界 '| |' 产生幽灵空格的歧义；
+    尾部不足一行的残片（跨页截断）退为表后文本行，内容不丢。
+    歧义/无法还原的行原样保留（不动作）。"""
+    lines = (text or "").splitlines()
+    if any(_MD_SEP_RE.match(ln.strip()) for ln in lines):
+        return text  # 已是多行形态
+    if "---" not in text or "|" not in text:
+        return text
+
+    def cells_of(region: str) -> list[str]:
+        region = region.strip().strip("|")
+        return [c.strip() for c in region.split("|")] if region.strip() else []
+
+    out: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not (s.startswith("|") and "---" in s):
+            out.append(ln)
+            continue
+        m = _SEP_ROW_TEXT_RE.search(s)
+        if not m:
+            out.append(ln)
+            continue
+        ncol = m.group(0).count("|") - 1
+        head = cells_of(s[:m.start()])
+        body = cells_of(s[m.end():])
+        if not ncol or not head or len(head) % ncol or not body:
+            out.append(ln)  # 歧义 → 原样保留
+            continue
+        full = len(body) - len(body) % ncol
+        if full == 0:
+            out.append(ln)
+            continue
+        out += ["| " + " | ".join(head[k:k + ncol]) + " |"
+                for k in range(0, len(head), ncol)]
+        out.append("|" + "|".join(["---"] * ncol) + "|")
+        out += ["| " + " | ".join(body[k:k + ncol]) + " |"
+                for k in range(0, full, ncol)]
+        if body[full:]:  # 跨页截断残片 → 表后文本行
+            out.append(" ".join(body[full:]))
+    return "\n".join(out)
 
 
 def _table_md_to_html(md: str) -> str | None:
     """markdown pipe 表格 → HTML table（构造性良构，单元格全转义）。
-    解析失败（无分隔行/列数严重不齐）返回 None——调用方回退普通文本块，
-    内容不丢（失败方向=不动作）。"""
+
+    宽容三点（FG 实测形态）：单行压扁表先 _unsquash 还原；分隔行允许落在
+    前 3 行内（双行分组表头，Anger Scale 形态），分隔行之前每行都作 thead
+    行；单列放行（(✓) 清单表/跨页列表碎片）。无分隔行/无 body 行仍返回
+    None——调用方回退普通文本块，内容不丢（失败方向=不动作）。"""
     import html as _h
-    lines = [ln.strip() for ln in (md or "").splitlines() if ln.strip()]
-    if len(lines) < 3 or not _MD_SEP_RE.match(lines[1]):
+    lines = [ln.strip() for ln in _unsquash_pipe_table(md or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    sep_idx = next((k for k in range(min(3, len(lines)))
+                    if _MD_SEP_RE.match(lines[k])), None)
+    if not sep_idx:  # None 或 0（分隔行打头无表头）
         return None
 
     def cells(row: str) -> list[str]:
         row = row.strip().strip("|")
         return [c.strip() for c in row.split("|")]
 
-    header, body = cells(lines[0]), [cells(r) for r in lines[2:]]
-    ncol = len(header)
-    if ncol < 2 or not body:
+    heads = [cells(r) for r in lines[:sep_idx]]
+    body = [cells(r) for r in lines[sep_idx + 1:]]
+    ncol = max(len(h) for h in heads)
+    if not body:
         return None
-    parts = ["<table><thead><tr>"]
-    parts += [f"<th>{_h.escape(c)}</th>" for c in header]
-    parts.append("</tr></thead><tbody>")
+    parts = ["<table><thead>"]
+    for h in heads:
+        h = (h + [""] * ncol)[:ncol]
+        parts.append("<tr>" + "".join(f"<th>{_h.escape(c)}</th>" for c in h) + "</tr>")
+    parts.append("</thead><tbody>")
     for r in body:
         r = (r + [""] * ncol)[:ncol]
         parts.append("<tr>" + "".join(f"<td>{_h.escape(c)}</td>" for c in r) + "</tr>")
     parts.append("</tbody></table>")
     return "".join(parts)
+
+
+def _split_embedded_table(text: str) -> list[dict] | None:
+    """text 块内嵌管道表抢救（模型把表格标成 text）：找分隔行 → 其前连续
+    管道行为表头、其后连续管道行为表体；前后残余文本各自成 text 块返回。
+    切不出合法表返回 None——调用方原样发射，不动作。
+
+    返回 [{"kind": "text"|"table", "text"|"html": ...}, ...]（保序）。"""
+    lines = _unsquash_pipe_table(text or "").splitlines()
+    sep_k = next((k for k, ln in enumerate(lines)
+                  if _MD_SEP_RE.match(ln.strip())), None)
+    if not sep_k:
+        return None
+    h = sep_k - 1
+    while h - 1 >= 0 and lines[h - 1].strip().startswith("|"):
+        h -= 1
+    head_lines = [ln for ln in lines[h:sep_k] if ln.strip()]
+    if not head_lines or not all(ln.strip().startswith("|") for ln in head_lines):
+        return None
+    body_lines: list[str] = []
+    b = sep_k + 1
+    while b < len(lines):
+        s = lines[b].strip()
+        if s.startswith("|"):
+            body_lines.append(lines[b])
+        elif s:
+            break
+        b += 1
+    if not body_lines:
+        return None
+    tbl_html = _table_md_to_html("\n".join(head_lines + [lines[sep_k]] + body_lines))
+    if not tbl_html:
+        return None
+    out: list[dict] = []
+    before = "\n".join(lines[:h]).strip()
+    after = "\n".join(lines[b:]).strip()
+    if before:
+        out.append({"kind": "text", "text": before})
+    out.append({"kind": "table", "html": tbl_html})
+    if after:
+        out.append({"kind": "text", "text": after})
+    return out
 
 
 _DANGLE_SAME_RE = re.compile(r"\$\$\s*\\?qqu[ad]*\s*(\(\d+\.\d+\))")
@@ -656,10 +775,18 @@ class VlmProvider:
         n_images = 0
         if bbox_client:
             for p in sorted(pages_json):
-                if pages_json[p].get("has_image"):
-                    _report(f"图片定位 第 {p} 页", None)
-                    n_images += self._extract_images(pdf_path, p, pages_json[p],
-                                                     bbox_client, images_dir, crop_dpi)
+                pj = pages_json[p]
+                if not pj.get("has_image") or not _needs_image_extract(pj, images_dir):
+                    continue
+                _report(f"图片定位 第 {p} 页", None)
+                n_images += self._extract_images(pdf_path, p, pj,
+                                                 bbox_client, images_dir, crop_dpi)
+                # img_path/bbox/降级结果回写 db：续跑回填与 content_list 重建都
+                # 以 db 为唯一事实源，只进内存会让 image 块在重建时全丢
+                # （2026-09-17 五书重放事故，图块归零）
+                db.save_page(p, "ok", pj, len(pj.get("blocks", [])),
+                             len(pj.get("footnotes", [])),
+                             bool(pj.get("has_image")), "", None)
 
         # ---- 汇总为 content_list 契约 ----
         toc_pages = _toc_region_pages(pages_json)
@@ -865,9 +992,15 @@ class VlmProvider:
                         out.append({"type": "table", "table_body": tbl_html,
                                     "bbox": bbox, "page_idx": p})
                     else:
-                        # pipe 解析失败 → 回退普通文本块，内容不丢
+                        # pipe 解析失败 → 回退普通文本块，内容不丢；全管道行
+                        # 形态剥首尾管道符（编号列表伪表格/跨页碎片，FG 认知
+                        # 扭曲表实测），不往正文塞裸 markdown
+                        raw = str(b.get("text", "")).strip()
+                        rlines = [ln for ln in raw.splitlines() if ln.strip()]
+                        if rlines and all(ln.strip().startswith("|") for ln in rlines):
+                            raw = "\n".join(ln.strip().strip("|").strip() for ln in rlines)
                         out.append({"type": "text",
-                                    "text": str(b.get("text", "")).strip(),
+                                    "text": raw,
                                     "bbox": bbox, "page_idx": p})
                 else:  # text 与降级占位
                     txt = b.get("text", "").strip()
@@ -876,6 +1009,23 @@ class VlmProvider:
                         txt = f"[插图{('：' + b['caption']) if b.get('caption') else ''}]"
                     if not txt:
                         continue
+                    # text 块内嵌管道表抢救（模型标错类型，FG 实测 2 处）：
+                    # 含分隔形态才尝试，切不出合法表原样发射（不动作）
+                    if "|" in txt and "---" in txt:
+                        txt = _unsquash_pipe_table(txt)
+                        rescued = _split_embedded_table(txt)
+                        if rescued:
+                            for part in rescued:
+                                if part["kind"] == "table":
+                                    out.append({"type": "table",
+                                                "table_body": part["html"],
+                                                "bbox": bbox, "page_idx": p})
+                                else:
+                                    out.append({"type": "text",
+                                                "text": _wrap_page_markers(part["text"], fn_markers),
+                                                "bbox": bbox, "page_idx": p})
+                            i += 1
+                            continue
                     out.append({"type": "text",
                                 "text": _wrap_page_markers(txt, fn_markers),
                                 "bbox": bbox, "page_idx": p})

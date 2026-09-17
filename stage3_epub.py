@@ -151,6 +151,29 @@ def _escape_attr(s: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+_IMG_SIZE_CACHE: dict = {}
+
+
+def _img_size_attr(images_dir: str, img_name: str) -> str:
+    """读图片物理像素尺寸，返回 ' width="W" height="H"'（读不到返空串）。
+
+    阅读器按物理尺寸预排图片占位，缺了会滚动塌陷；失败方向 = 不写属性
+    （铁律 0：宁可不做，也不错做）。按 目录/文件名 缓存，全书图只读一次。
+    """
+    if not images_dir or not img_name:
+        return ""
+    key = os.path.join(images_dir, img_name)
+    if key not in _IMG_SIZE_CACHE:
+        try:
+            from PIL import Image
+            with Image.open(key) as im:
+                _IMG_SIZE_CACHE[key] = im.size
+        except Exception:
+            _IMG_SIZE_CACHE[key] = (0, 0)
+    w, h = _IMG_SIZE_CACHE[key]
+    return f' width="{w}" height="{h}"' if w and h else ""
+
+
 _LATEX_TYPO_RE = re.compile(r"\\qqud\b")
 _SINGLE_ARG_CMD_RE = re.compile(
     r"\\(slashed|bar|hat|tilde|vec|dot|ddot|breve|check|acute|grave)([a-zA-Z])")
@@ -221,6 +244,14 @@ def _latex_to_mathml(latex: str, display: bool) -> str:
         mathml = mathml.replace(
             "<math ",
             f'<math alttext="{_escape_attr(latex)}" ',
+            1,
+        )
+        # 同步落 LaTeX 源码 annotation（EPUB3 MathML 标准语义节点）：阅读器
+        # 复制公式时可取回可编辑源码，alttext 只是纯文本兜底属性。
+        ann = latex.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        mathml = mathml.replace(
+            "</math>",
+            f'<annotation encoding="application/x-tex">{ann}</annotation></math>',
             1,
         )
         return mathml
@@ -632,7 +663,8 @@ def _render_block_to_html(block: dict, images_dir: str,
         img_name = Path(img_path).name if img_path else ""
         html = ""
         if img_name:
-            html = f'<img src="images/{img_name}" alt="{caption}"/>'
+            html = (f'<img src="images/{img_name}" alt="{caption}"'
+                    f'{_img_size_attr(images_dir, img_name)}/>')
         if caption:
             if chinese_punct:
                 caption = _convert_punctuation(caption)
@@ -981,7 +1013,8 @@ def _render_popo_body(popo_blocks: list, content_list: list,
                       body_start: int, body_end: int,
                       chinese_punct: bool, default_title: str,
                       toc_entries: list = None,
-                      translations: dict = None) -> list:
+                      translations: dict = None,
+                      images_dir: str = "") -> list:
     """线性遍历 Popo 标注 blocks，按层级切成 编(divider)/章(chapter) 单元。
 
     返回 units 列表：
@@ -1274,7 +1307,8 @@ def _render_popo_body(popo_blocks: list, content_list: list,
             if img_name:
                 caps = caption_map.get(b["id"], [])
                 alt = caps[0] if caps else ""
-                html += f'<img src="images/{img_name}" alt="{convert(alt)}"/>'
+                html += (f'<img src="images/{img_name}" alt="{convert(alt)}"'
+                         f'{_img_size_attr(images_dir, img_name)}/>')
             for cap in caption_map.get(b["id"], []):
                 html += f'<p class="no_indent"><small>{_mathmlify(convert(cap))}</small></p>'
             for fn in footnote_map.get(b["id"], []):
@@ -1641,6 +1675,7 @@ def generate_epub(
                 chinese_punct, title,
                 toc_entries=structure.get("toc_entries"),
                 translations=translations,
+                images_dir=images_dir,
             )
             logger.info(
                 f"  Popo 渲染: {len(units)} 个单元 "

@@ -298,8 +298,11 @@ class TestHelpers(unittest.TestCase):
         self.assertIn("<td></td>", _table_md_to_html(md2))
         # 无分隔行 → None（回退文本）
         self.assertIsNone(_table_md_to_html("普通文本\n没有表格"))
-        # 单列 → None
-        self.assertIsNone(_table_md_to_html("| A |\n|---|\n| 1 |"))
+        # 单列放行（T3① 形态扩展：FG (✓) 清单表/跨页列表碎片）
+        single = _table_md_to_html("| A |\n|---|\n| 1 |")
+        self.assertIn("<th>A</th>", single)
+        # 分隔行打头（无表头）→ None
+        self.assertIsNone(_table_md_to_html("|---|---|\n| 1 | 2 |"))
 
     def test_fix_dangling_eq_numbers(self):
         """游离公式编号归位：\\qqud(3.47) 裸源码并入 $$；块首 (3.47) 移入上块；

@@ -1352,3 +1352,46 @@
 - sanitize 长尾：`\left/\right` 后跟间距命令 → 空定界符（'\right\,'
   非法定界符）；unicode 映射补 ∶→\colon、△→\triangle。
 - 新高数（修正版 PDF）终态：tex 编译 **0 错 0 缺字符 636 页**；全测试链绿。
+
+## 病例 044｜系统层四连 + VLM 管道表抢救 — annotation/img 尺寸/撞名/图块事故/裸管道
+
+- **T1 MathML annotation**（SageRead 清单 #1）：`_latex_to_mathml` 在
+  `</math>` 前注入 `<annotation encoding="application/x-tex">清洗后源码
+  </annotation>`（与 alttext 同料，XML 实体转义）。阅读器复制公式可取回
+  可编辑 LaTeX。QFT 8576 处、高数 13326 处实测注入。
+- **T4 img 物理尺寸**（SageRead 清单 #5）：`_img_size_attr`（PIL 读宽高，
+  按 目录/文件名 缓存，读不到不写——铁律 0）接入 `_render_block_to_html`
+  与 `_render_popo_body`（后者新加 images_dir 参数）。防阅读器滚动塌陷。
+- **输出目录撞名避让**（用户裁定）：同书名重转到同一输出目录不得覆盖。
+  `pipeline._unique_book_dir`：目录含既有交付产物（epub/md/tex 任一非空）
+  → `书名 (1)/(2)…`；只有缓存（vlm_state.db 等）不算撞名（work_dir 与
+  交付根同目录，纯缓存重跑照常原地交付）。registry 增 dir_name 字段。
+- **P0 图块丢失事故**（2026-09-17 五书重放）：db.save_page 在图片提取
+  **之前**落库 → img_path 只进内存 → 任何从 db 的 content_list 重建都把
+  image 块降级文字占位（gaoshu/qft/FG/hanyu/must_defend 图块归零，md 图
+  引用却在——md 是原跑内存态生成）。两根修：
+  - stage1_vlm 图片提取循环后 `db.save_page` **回写**（img_path/bbox/降级
+    固化进 db）；`_needs_image_extract` 守卫：块已带 path 且 PNG 在盘 →
+    续跑跳过不重烧 bbox API。
+  - `scripts/restore_vlm_images.py`：md 图引用（原跑配对结果 caption+路径）
+    ↔ db image 块按页按序配对，caption 归一化不等整页跳过（不错配）。
+    五书 190/60/29/85/0 全配对、零警告；回写 db + 走 `_drop_minitoc_lines`
+    → `_to_content_list` 原路径重建。四书正式重跑（stage2+3+导出）图全归。
+- **T3① 管道表残留**（SageRead 清单 #3，FG 实测 10 处清零）：
+  `_table_md_to_html` 三宽容——`_unsquash_pipe_table`（单行压扁表以分隔行
+  文本为锚还原多行，避开 '| |' 边界幽灵格歧义；截断残片退表后文本）、
+  分隔行允许落前 3 行（双行分组表头 Anger Scale 形态，多行进 thead）、
+  单列放行（(✓) 清单表/跨页碎片）；`_split_embedded_table`（t=text 内嵌
+  真表切分，前后文本各自成块）；t=table 解析失败回退剥首尾管道符（编号
+  列表伪表格）。`_MD_SEP_RE` 重复段 + → *（单列分隔行 `|---|`）。
+- **T2 段号转义 '5.\.'**（SageRead 清单 #2）：定位 SageRead 侧 htmd 目录
+  提取（EPUB 标题 `<h3>5.5 Wick's theorem…</h3>` 干净，metadata.md 脏）；
+  我方数据层无责（七书标题反斜杠扫描 0 命中）。SageRead 已兜底+需重跑
+  向量化。
+- **T3② 单元格截断**（SageRead 清单 #4）：旧 MinerU 引擎版 FG 的可视边界
+  裁剪问题；VLM 版全词无截断（'1—Somewhat/2—Moderately/4—Extremely'）。
+- **回归**：tests/test_stage3_annotation.py（13 例）+ test_stage1_vlm_images.py
+  （5 例）+ test_stage1_vlm_table.py（16 例）；test_stage1_vlm.py 单列断言
+  按新语义改；全测试链绿；gaoshu/qft/FG/hanyu 重建 QC 黄（固有），FG 红 2
+  条为已知挂账（III. 长度帽 + Fifty Ways em-dash，T13/T12）。
+- **状态**：已修复并验证（FG 挂账照旧）。
