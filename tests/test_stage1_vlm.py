@@ -402,6 +402,28 @@ class TestHelpers(unittest.TestCase):
         top, bottom = [100, 50, 400, 300], [100, 400, 400, 700]
         self.assertEqual(_reading_order([bottom, top]), [top, bottom])
 
+    def test_demote_running_heads_title_exempt(self):
+        # FG ch12 实测：章题 '12  All-or-Nothing Thinking'（章号起首、与书眉
+        # 同文但全文含章号）被页眉判定误降——title 块仅当全书复发 ≥3 才降；
+        # QFT 实测：截断书眉 '2.2 The Lorentz grou' 每节页复发 → 降
+        from stage1_vlm import _demote_running_heads, _norm_key
+        cands = {_norm_key("All-or-Nothing Thinking"), _norm_key("民法总论")}
+        freq = {_norm_key("2.2 The Lorentz grou"): 5,
+                _norm_key("12  All-or-Nothing Thinking"): 1}
+        out = _demote_running_heads([
+            {"t": "title", "text": "12  All-or-Nothing Thinking", "level": 2},
+            {"t": "text", "text": "012 民法总论"},
+            {"t": "text", "text": "正文段落，长度远超四十二字符的书眉判定上限" + "长" * 40},
+        ], cands, freq)
+        self.assertEqual(out[0]["t"], "title")   # 真章题（全书一次）→ 豁免
+        self.assertEqual(out[1]["t"], "header")  # text 页眉剥号命中 → 仍降
+        self.assertEqual(out[2]["t"], "text")    # 长块不动
+        out2 = _demote_running_heads([
+            {"t": "title", "text": "2.2 The Lorentz grou", "level": 3},
+            {"t": "text", "text": "正文。"},
+        ], cands, freq)
+        self.assertEqual(out2[0]["t"], "header")  # 复发书眉（≥3 页）→ 降
+
     def test_reasoning_map(self):
         # glm-5.3-flash 恒思考：off 也必须落到 low，永不下发 disabled（400 实证）
         self.assertEqual(reasoning_extra("https://api.z.ai/api/paas/v4", "glm-5.3-flash", "off"),

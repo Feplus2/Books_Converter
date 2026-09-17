@@ -156,6 +156,7 @@ _SINGLE_ARG_CMD_RE = re.compile(
     r"\\(slashed|bar|hat|tilde|vec|dot|ddot|breve|check|acute|grave)([a-zA-Z])")
 _SUB_PRIME_SWAP_RE = re.compile(r"_'(.)'")
 _TRAILING_LONE_BS_RE = re.compile(r"(?<!\\)\\$")
+_LR_SPACING_RE = re.compile(r"\\(left|right)\\[,;: ]")
 
 
 def _sanitize_latex(latex: str) -> str:
@@ -166,10 +167,13 @@ def _sanitize_latex(latex: str) -> str:
     - 下标/撇号序颠倒：\Phi_'+'(a) → \Phi_+'(a)（教材 Φ'₊(a) 写法，
       高数 p253 实测）；
     - 剥行尾孤反斜杠（模型把闭合 $ 写成 \\$ 残留尾 \\，高数 (7-11)
-      实测级联炸后续 \\[ \\]）。"""
+      实测级联炸后续 \\[ \\]）；
+    - \\left/\\right 后跟间距命令 → 空定界符 \\left./\\right.
+      （'\\right\\,' 非法定界符，新高数实测）。"""
     latex = _LATEX_TYPO_RE.sub(r"\\qquad", latex)
     latex = _SINGLE_ARG_CMD_RE.sub(lambda m: f"\\{m.group(1)}{{{m.group(2)}}}", latex)
     latex = _SUB_PRIME_SWAP_RE.sub(r"_\1'", latex)
+    latex = _LR_SPACING_RE.sub(r"\\\1.", latex)
     return _TRAILING_LONE_BS_RE.sub("", latex.rstrip())
 
 
@@ -1509,7 +1513,7 @@ def generate_epub(
     # Popo/Hybrid 引擎：加载标注 blocks 与正文页码范围
     popo_blocks = None
     popo_body = None
-    if structure.get("engine") in ("popo", "hybrid"):
+    if structure.get("engine") in ("popo", "hybrid", "vlm-hybrid"):
         blocks_file = structure.get("popo_blocks_file")
         blocks_path = Path(output_dir) / blocks_file if blocks_file else None
         if blocks_path and blocks_path.is_file():
@@ -1629,7 +1633,7 @@ def generate_epub(
         front_toc.append(epub.Link(chapter.file_name, fm_label, f"fm_{i}"))
 
     # ── 正文（Popo 引擎：线性渲染标注 blocks） ──
-    if structure.get("engine") in ("popo", "hybrid"):
+    if structure.get("engine") in ("popo", "hybrid", "vlm-hybrid"):
         units = []
         if popo_blocks:
             units = _render_popo_body(

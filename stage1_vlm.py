@@ -221,21 +221,33 @@ _HEAD_NUM_LEFT = re.compile(r"^\d{1,4}\s+(.+?)\s*$")
 _HEAD_NUM_RIGHT = re.compile(r"^(.+?)\s*\d{1,4}\s*$")
 
 
-def _demote_running_heads(blocks: list[dict], cands: set) -> list[dict]:
-    """页首书眉降级：前两个 text/title 块里，"数字页码+书眉候选"形态的短块
-    降为 header（噪声，不渲染、不截断跨页合并）。无数字页码或候选不匹配
-    一律不动（失败方向=不动作；章题本身无页码，天然豁免）。"""
-    if not cands:
+def _demote_running_heads(blocks: list[dict], cands: set,
+                          title_freq: dict | None = None) -> list[dict]:
+    """页首书眉降级：前两个 text/title 块里的书眉形态短块降为 header
+    （噪声，不渲染、不截断跨页合并）。
+
+    两路判别（FG ch12 与 QFT 书眉双实测，两头误伤都防）：
+    - **text 块**：剥首/尾数字后匹配书眉候选（'012 民法总论' 形态）；
+    - **title 块**：仅当该文本作为 title 块在全书出现 ≥3 次才降——真章题
+      全书只出现一次（章题与书眉同文也不怕：FG '12  All-or-Nothing
+      Thinking' 全文含章号，书眉字段无号，天然豁免）；书眉被模型标成
+      title 时必然在多页复发（QFT '2.2 The Lorentz grou' 每节页页如此）。"""
+    if not cands and not title_freq:
         return blocks
     out = []
     for idx, b in enumerate(blocks):
         if idx <= 1 and b.get("t") in ("text", "title"):
             t = str(b.get("text", "")).strip()
             if 0 < len(t) <= 42:
-                m = _HEAD_NUM_LEFT.match(t) or _HEAD_NUM_RIGHT.match(t)
-                if m and _norm_key(m.group(1)) in cands:
-                    out.append({"t": "header", "text": t})
-                    continue
+                if b.get("t") == "title":
+                    if title_freq and title_freq.get(_norm_key(t), 0) >= 3:
+                        out.append({"t": "header", "text": t})
+                        continue
+                else:
+                    m = _HEAD_NUM_LEFT.match(t) or _HEAD_NUM_RIGHT.match(t)
+                    if m and _norm_key(m.group(1)) in cands:
+                        out.append({"t": "header", "text": t})
+                        continue
         out.append(b)
     return out
 
@@ -780,11 +792,18 @@ class VlmProvider:
                          toc_pages: set | None = None) -> list[dict]:
         toc_pages = toc_pages if toc_pages is not None else _toc_region_pages(pages_json)
         head_cands = _head_candidates(pages_json, toc_entries or [])
+        # 全书 title 块文本频次（书眉被标成 title 时必复发，真章题全书一次）
+        from collections import Counter as _Counter
+        title_freq = _Counter(
+            _norm_key(str(b.get("text", "")))
+            for pj in pages_json.values() for b in pj.get("blocks", [])
+            if b.get("t") == "title" and str(b.get("text", "")).strip())
         out = []
         for p in sorted(pages_json):
             pj = pages_json[p]
             blocks = _fix_dangling_eq_numbers(_demote_running_heads(
-                _merge_bare_number_titles(pj.get("blocks", [])), head_cands))
+                _merge_bare_number_titles(pj.get("blocks", [])),
+                head_cands, title_freq))
             fns = pj.get("footnotes", [])
             fn_markers = {str(f.get("marker", "")).strip() for f in fns
                           if str(f.get("marker", "")).strip()}

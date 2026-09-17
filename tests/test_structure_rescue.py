@@ -62,7 +62,7 @@ print("2. _build_anchors 退化条目拒收")
 anchors = _build_anchors(FG_TOC + [{"text": "VI.", "level": 1, "page": None}])
 keys = {a[0] for a in anchors}
 ok("vi." not in keys and "vi" not in keys, "退化条目 'VI.' 未成为锚点")
-ok(any("12.all-or-nothingthinking" == k for k in keys), "正常章条目在锚表中")
+ok(any("12all-or-nothingthinking" == k for k in keys), "正常章条目在锚表中（编号句点归一后）")
 anchors_cjk = _build_anchors([{"text": "跋", "level": 1, "page": 600}])
 ok(len(anchors_cjk) == 1, "单字 CJK 锚点 '跋' 保留")
 
@@ -323,6 +323,15 @@ ok(blocks17[1]["type"] == "title", "真章标题不受页眉规则影响")
 norm_a = _normalize_title("f(x)=\\mathrm{e}^{\\lambda x}[\\,P_l(x)\\cos\\omega x\\,]")
 norm_b = _normalize_title("f(x)=\\mathrm{e}^{\\lambda x}[P_l(x)\\cos \\omega x]")
 ok(norm_a == norm_b, "LaTeX 间距命令 \\, 归一对齐（cos\\omega x\\, ↔ cos \\omega x）")
+
+ok(_normalize_title("12. All-or-Nothing Thinking")
+   == _normalize_title("12  All-or-Nothing Thinking"),
+   "编号句点归一（'12. X' ↔ '12  X'）")
+ok(_normalize_title("III. The Spiritual Dimension")
+   == _normalize_title("III The Spiritual Dimension"),
+   "罗马数字句点归一（'III. X' ↔ 'III X'）")
+ok(_normalize_title("3.14 节") != _normalize_title("314 节"),
+   "小数形 '3.14' 不被误归")
 
 print(f"\n{passed} 过 / {failed} 挂")
 sys.exit(1 if failed else 0)

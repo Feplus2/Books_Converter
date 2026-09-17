@@ -1277,3 +1277,78 @@
   tex 编译 0 错 0 缺字符 778 页；overset/Φ/公式页栅格化亲读正常。
 - **状态**：已修复。阶段教训：tex 编译是公式链路最强探针（把 EPUB 里
   静默的 alttext 污染全部显形），后续大改建议保留"编译过一遍"验收位。
+
+## 病例 043｜VLM 专用 Stage 2（stage2_vlm）— 架构拆分（用户批准，wiki/09）
+
+- **决策**：规则 Stage 2（stage2_hybrid）为 OCR 烂输入设计（DeepSeek 四项
+  重打标 + 目录检测家族 + 页码救援/幻影合成），用在 VLM 结构化产物上
+  是"弱模型改强模型判断"+救援规则纯副作用（"反向救援"误伤 VLM 正确
+  标注的页眉；目录先验被晾着，037 被迫把 VLM 输出掰弯喂 OCR 检测器）。
+  拆为：**stage2_hybrid 原样留给规则引擎；新 stage2_vlm 薄编排器**
+  （~540 行，设计稿 wiki/09），共享 stage2_common 函数库（归一/匹配器/
+  形状栈/降格守卫——不复制，避免未来 bug 翻倍）。
+- **编排**（契约偏差与裁定，均已在交付摘要确认）：
+  - 裁：DeepSeek 四项标注、目录检测家族、`_rescue_by_page`（核心）、
+    `_global_level_pass`（换规则版局部形状栈）、`_anchor_generic_outline`；
+    保：`_light_metadata_pass`（全书唯一 LLM 调用点）、锚定校正、
+    降格三守卫、词表锚定、build_tree。
+  - stage1 图文配对直连（image=caption 块 id），规则版 contd
+    （prev.contd=next.id 工作约定），表格合并复用 popo util；
+    目录先验（vlm_state.db toc_entries）直接作锚；db 缺失回退 light 提取。
+  - **stage3_epub.py 两处 engine 门禁**（1512/1632）扩展 `"vlm-hybrid"`
+    ——"下游零感知"预设在精确匹配上不成立，最小扩展追认（造假写
+    engine="hybrid" 是更脏的选项）。
+  - 新增 `structure["cross_check"]` 三列表（未锚/层级不符/页偏移异常），
+    只报告不动作——二期升级为"差异重读该页"（伊豆挂账的正主）。
+- **minfa 冒烟**（--skip-mineru 复缓存）：anchor 234/234 全中、synth 0、
+  missing 0、空章 0（首轮 16 → 局部形状栈根修）、脚注 902 全保、
+  cross_check 三列表全空、orphan 231→217 改善。tests/test_stage2_vlm.py
+  9 例 + 全链绿。
+- **状态**：五本对照回归 + 高数新 PDF 全量重跑进行中（用户已修正源 PDF
+  页序，新版在 _regress/vlm-lab/pdfs/gaoshu.pdf）。
+- **挂账**：db 目录先验自身方差（民法 四、/五、 被锚 L5 vs 兄弟 L4，
+  cosmetic，二期交叉校验升级为行动）；`_rule_table_merge` 缺真书 exercising
+  （与 042 表格深度挂账合并验证）；stage1 目录提取对同族条目 level 抖动。
+
+### 病例 043 续｜七本回归自迭代：索引污染切除 / 编号句点归一 / 书眉判定不复发化
+
+- **索引页污染目录先验（两机制）**：模型把书末索引页当目录页读，先验整段
+  被索引污染（must_defend 368→16 真条目、Feeling Great 569→46），锚定/
+  映射后制造数百幻影章（FG 378 空章、md 129 未锚）。修补
+  `stage2_vlm._cut_index_tail`：显式 'Index' 条目硬边界（边界后只留真目录
+  形状——数字/罗马/章节前缀、日期、前后页家族词，且不带页码串尾巴；
+  must_defend 的 four–eight 讲次落界后也保下），无边界回退字母序/页码串
+  连续尾 ≥8。配套 `_demote_index_region_titles`：末 30% 书页连续 ≥2 页
+  每页 ≥15 个映射标题的区段判为索引区降回正文（FG p527-529 每页 95+
+  词条实测）。教训：判据从"词条形状/字母序/深层级"一路错到"显式边界+
+  形状救生索"——真实索引有子词条破单调、层级不均、页码被剥，三刀皆钝。
+- **编号句点归一**：目录 '12. All-or-Nothing Thinking' ↔ 正文 '12  All-…'、
+  'III. X' ↔ 'III X'（印刷目录带句点、正文常无）——`_normalize_title`
+  剥首段数字/罗马句点（(?=\D) 防误伤 '3.14'），FG 四个章、QFT '12
+  Solutions to exercises' 因此锚上。
+- **书眉判定不复发化**：`_demote_running_heads` 原规则"剥号+书眉候选"把
+  FG ch12 真章题（章号起首且与书眉同文）误降为 header——正是用户点名
+  的"VLM 正确标注被旧规则反向救援误伤"。改：title 块仅当文本**全书复发
+  ≥3 次**（title_freq）才降（真章题全书一次，书眉被标 title 必然页页
+  复发——QFT '2.2 The Lorentz grou' 实测）；text 块原剥号规则不动。
+  中间两版（title 全豁免 / 全文匹配候选）都被实测否掉：前者放出 QFT
+  书眉幻影，后者会把与目录同文的真章题（minfa '第一章 民法概念论'）吃掉。
+- **重放教训**：手工用 `_to_content_list` 重放 content_list 必须同步
+  `_drop_minitoc_lines`（漏调 → QFT 章首 mini-TOC 行锚出 5 个空章）与
+  重建 popo（下标漂移 → born 假丢 23 块）。生产管线 parse() 步骤缺一不可。
+- **终验（六本 + minfa 早前）**：must_defend 🟢 16/16、qft 🟢 108/108、
+  born 🟢 4/4、hanyu 🟡 72/72（固有黄）、gaoshu 🟡 80/80（新 PDF 全量
+  重跑，固有黄）、minfa 234/234 全中。Feeling Great 41/43 挂账 3 项：
+  'III. …'（长度帽 64 拦晋升——该帽正生于本书 CliffsNotes 案，方向正确）、
+  '1. Fifty Ways…'（正文缺块 + em-dash 归一候选）、'3. The Role-Play Tec'
+  （空章 1，cosmetic）。
+- **状态**：完成（除 FG 挂账）。wiki/09 §6 里程碑同步。
+
+### 病例 043 再续｜交付图片陈旧刷新 + sanitize 长尾
+
+- **`_deliver` 图片陈旧 bug**：`with_images` 此前 `tgt/images 不存在才复制` ——
+  老产物残留时新跑图片根本进不了交付目录（新高数 tex 引用 p0022_1 但目录里
+  是上一轮老图，12 个图片加载错误）。改：永远 rmtree+copytree 刷新。
+- sanitize 长尾：`\left/\right` 后跟间距命令 → 空定界符（'\right\,'
+  非法定界符）；unicode 映射补 ∶→\colon、△→\triangle。
+- 新高数（修正版 PDF）终态：tex 编译 **0 错 0 缺字符 636 页**；全测试链绿。

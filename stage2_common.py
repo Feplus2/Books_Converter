@@ -500,6 +500,11 @@ def _normalize_title(text: str) -> str:
     # 全半角括号统一（病例 037：目录半角（义位系统）↔ 正文全角（义位系统）
     # 失配，锚点落空 → 救援合成幻影）
     t = t.replace("（", "(").replace("）", ")")
+    # 编号句点归一（目录 '12. All-or-Nothing' ↔ 正文 '12  All-or-Nothing'、
+    # 'III. The…' ↔ 'III The…'——印刷目录带句点、正文标题常无，FG 实测
+    # 四个章因此锚不上；(?=\D) 防误伤小数形 '3.14'）
+    t = re.sub(r"^(\d{1,3})[.、．](?=\D)", r"\1", t)
+    t = re.sub(r"^([IVXLC]+)[.、．](?=\D)", r"\1", t)
     return re.sub(r"[\s　]+", "", t).strip().casefold()
 
 

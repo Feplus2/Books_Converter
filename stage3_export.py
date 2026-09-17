@@ -175,6 +175,7 @@ _TEX_MATH_UNICODE.update({
     "ˣ": "^x", "ʸ": "^y", "ʳ": "^r", "ˡ": "^l", "ˢ": "^s", "ʰ": "^h",
     "ᵗ": "^t", "ᵏ": "^k", "ᵐ": "^m", "ⁱ": "^i",
     "□": r"\square", "■": r"\blacksquare", "▪": r"\blacksquare",
+    "∶": r"\colon", "△": r"\triangle",
 })
 
 

@@ -13,9 +13,14 @@ PDF ──▶ Stage 1 解析引擎（云端 OCR/版面分析）
           {stem}_content_list.json   MinerU 风格块列表（契约）
           {stem}.md                  引擎直出 markdown（留档）
           images/                    裁切好的图片
-          ──▶ Stage 2 结构重建（stage2_hybrid + stage2_common）
-                LLM 分块标注（contd 跨页拼接 / 标题层级 / 图文关联 / 跨页表格）
-                + 锚点层级系统（见 02）+ 轻量兜底（metadata/前后页/目录条目）
+          ──▶ Stage 2 结构重建（按引擎分流）
+                ├─ 规则引擎 → stage2_hybrid + stage2_common：
+                │    LLM 分块标注（contd 跨页拼接 / 标题层级 / 图文关联 / 跨页表格）
+                │    + 锚点层级系统（见 02）+ 轻量兜底（metadata/前后页/目录条目）
+                └─ vlm → stage2_vlm（薄编排，设计稿 wiki/09）：本地映射
+                     （text_level/图文配对直连）+ 规则版 contd + 目录先验直接
+                     作锚 + 共享匹配器/形状栈/降格守卫 + 交叉校验报告；
+                     无 DeepSeek 重打标、无目录检测、无救援合成
                 产出：popo_blocks.json + structure.json
           ──▶ Stage 3 EPUB 装订（stage3_epub）
                 线性切章 → 嵌套 nav → MathML/尾注/封面

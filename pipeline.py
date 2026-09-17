@@ -36,6 +36,7 @@ from pathlib import Path
 from stage1_mineru import _count_pages
 from ocr_provider import get_provider, provider_names
 from stage2_hybrid import analyze_structure_hybrid, save_structure
+from stage2_vlm import analyze_structure_vlm
 from stage3_epub import generate_epub
 from progress_headless import HeadlessProgress, emit_error
 # ProgressWindow（tkinter）改为延迟导入，headless CLI 不打包 tkinter
@@ -265,31 +266,44 @@ def main():
                 sys.exit(1)
             pw.complete_stage(1, f"{s1_name} (缓存)", 0)
 
-        # ═══ Stage 2: 结构分析（Hybrid 引擎） ════════════════════════
+        # ═══ Stage 2: 结构分析（Hybrid / VLM-Structure） ═══════════════
         structure = None
         if not args.skip_deepseek:
             # PDF outline/书签先验已弃用（病例 028，用户拍板 2026-09-09）：
             # 扫描本第三方书签形态不可控（假目录/泛名条目/页码书签洪水三连），
             # 只信 OCR 重建目录 + 前后页词表锚定。_read_pdf_outline 保留备查。
             pdf_toc = None
-            pw.update_stage(2, "Hybrid", "正在准备结构分析...")
+            s2_name = "VLM-Structure" if engine == "vlm" else "Hybrid"
+            pw.update_stage(2, s2_name, "正在准备结构分析...")
             t0 = time.time()
             try:
-                structure = analyze_structure_hybrid(
-                    mineru_info["content_list"],
-                    book_name,
-                    str(work_dir),
-                    progress=lambda detail, fraction=None: pw.update_stage(2, "Hybrid", detail, fraction),
-                    max_pages=args.max_pages,
-                    pdf_toc=pdf_toc,
-                )
+                if engine == "vlm":
+                    if args.max_pages:
+                        logger.warning("--max-pages 仅 Hybrid 路径支持，VLM 路径忽略")
+                    vlm_db = work_dir / "vlm" / "vlm_state.db"
+                    structure = analyze_structure_vlm(
+                        mineru_info["content_list"],
+                        book_name,
+                        str(work_dir),
+                        vlm_state_db=vlm_db if vlm_db.exists() else None,
+                        progress=lambda detail, fraction=None: pw.update_stage(2, s2_name, detail, fraction),
+                    )
+                else:
+                    structure = analyze_structure_hybrid(
+                        mineru_info["content_list"],
+                        book_name,
+                        str(work_dir),
+                        progress=lambda detail, fraction=None: pw.update_stage(2, s2_name, detail, fraction),
+                        max_pages=args.max_pages,
+                        pdf_toc=pdf_toc,
+                    )
                 save_structure(structure, str(work_dir))
             except Exception as e:
-                logger.error(f"Stage 2 (Hybrid) 失败: {e}")
+                logger.error(f"Stage 2 ({s2_name}) 失败: {e}")
                 logger.error("将使用 MinerU 原始结构继续生成 EPUB...")
                 structure = _fallback_structure(mineru_info, book_name)
-            stage_times["Hybrid"] = time.time() - t0
-            pw.complete_stage(2, "Hybrid", stage_times["Hybrid"])
+            stage_times[s2_name] = time.time() - t0
+            pw.complete_stage(2, s2_name, stage_times[s2_name])
         else:
             structure_path = work_dir / "structure.json"
             if structure_path.exists():
@@ -368,8 +382,13 @@ def main():
                         delivered.append(str(dst))
                 if with_images:
                     src_images = work_dir / "images"
-                    if src_images.is_dir() and not (tgt / "images").exists():
-                        shutil.copytree(src_images, tgt / "images")
+                    if src_images.is_dir():
+                        # 永远刷新：老产物残留会让新引用缺图（高数 p0022_1 实测——
+                        # 此前 tgt/images 已存在即跳过，新跑图片根本没进交付目录）
+                        dst = tgt / "images"
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        shutil.copytree(src_images, dst)
                 return delivered
 
             epub_path = Path(_deliver("epub", [epub_path], with_images=False)[0])
