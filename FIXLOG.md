@@ -1430,8 +1430,8 @@
   9.3 节标题 VLM 漏读（正文在，T11 交叉校验正主）；缺页 p16/p497 =
   极淡分隔页/Anna's Archive 水印页（不优化/正确排除）。
 - **拆壳顺序事故**：`_TEXT_MATH_SHELL_RE` 首版在 unicode 映射前跑——℃ 被
-  映射成 `^\circ\mathrm{C}` 落进 	ext{} 壳内（机械手册 42 错尾巴）；改
-  为映射后再扫 + `_TEXT_NEST_RE` 塌缩 `	ext{	ext{X}}` 双壳。
+  映射成 `^\circ\mathrm{C}` 落进 \text{} 壳内（机械手册 42 错尾巴）；改
+  为映射后再扫 + `_TEXT_NEST_RE` 塌缩 \text{\text{X}} 双壳。
 - **状态**：全部修复并验证——**九书 xelatex 全 0 错 0~39 缺字符**：
   gaoshu 812 / qft 456 / FG 611 / hanyu 439 / minfa 596 / must_defend 277 /
   izuno 227 / born 213 / **jixie 1411 页（0 错 0 缺字符，1411 页表格极限书）**。
