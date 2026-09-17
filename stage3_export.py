@@ -63,13 +63,38 @@ def build_units(work_dir: str | Path, use_translations: bool = True) -> list:
     total_pages = max((b.get("page_idx", 0) + 1 for b in content_list), default=0)
     body_start, body_end = s3._body_range(structure, total_pages)
     meta = structure.get("metadata", {})
-    units = s3._render_popo_body(
+    zh = meta.get("language", "zh") == "zh"
+
+    def _extra_units(entries: list, default_label: str) -> list:
+        """前页/后页（前言、版权页、附录等 keep=true 条目）→ 单元。
+        每个条目并成一个以 label 命名的单元（内容不丢，封面 keep=false 跳过）。"""
+        out = []
+        for it in entries:
+            if not it.get("keep"):
+                continue
+            label = it.get("label") or default_label
+            us = s3._render_popo_body(
+                popo_blocks, content_list,
+                int(it.get("page_start", 0)), int(it.get("page_end", 0)),
+                zh, label, toc_entries=None, translations=translations)
+            if not us:
+                continue
+            u = us[0]
+            for extra in us[1:]:
+                u["parts"].extend(extra.get("parts", []))
+            u["kind"], u["title"] = "chapter", label
+            out.append(u)
+        return out
+
+    units = _extra_units(structure.get("front_matter", []), "前页")
+    units += s3._render_popo_body(
         popo_blocks, content_list, body_start, body_end,
-        meta.get("language", "zh") == "zh",
+        zh,
         meta.get("title") or work_dir.name,
         toc_entries=structure.get("toc_entries"),
         translations=translations,
     )
+    units += _extra_units(structure.get("back_matter", []), "后页")
     return units
 
 
@@ -149,6 +174,7 @@ _TEX_MATH_UNICODE.update({
     "⩽": r"\leqslant", "⩾": r"\geqslant", "℉": r"^\circ\mathrm{F}", "℃": r"^\circ\mathrm{C}",
     "ˣ": "^x", "ʸ": "^y", "ʳ": "^r", "ˡ": "^l", "ˢ": "^s", "ʰ": "^h",
     "ᵗ": "^t", "ᵏ": "^k", "ᵐ": "^m", "ⁱ": "^i",
+    "□": r"\square", "■": r"\blacksquare", "▪": r"\blacksquare",
 })
 
 
@@ -274,7 +300,9 @@ def _emit_tokens_md(txt: str) -> str:
         if kind == "MATHI":
             return f"${body}$"
         if kind == "MATHB":
-            return f"\n$${body}$$\n"
+            # 空行环绕成独立段落——否则 Typora/GFM 把行内 $$ 退化为源码/行内
+            # （实测：记作 $$…$$ 其中 被渲染成左对齐小字甚至源码块）
+            return f"\n\n$${body}$$\n\n"
         return f"[^{body}]"
     return _MARK_RE.sub(rep, txt)
 
@@ -475,8 +503,10 @@ def render_unit_tex(unit: dict) -> str:
                        else f"${_tex_math_sanitize(latex)}$")
         elif ev[0] == "img":
             src, alt = ev[1], ev[2]
-            cap = f"\\caption{{{_tex_escape(alt)}}}" if alt else ""
-            out.append("\\begin{figure}[h]\n\\centering\n"
+            cap = f"\\caption*{{{_tex_escape(alt)}}}" if alt else ""
+            # [H] 精确就位 + \caption*（书自带图号"图 1-7"，自动编号叠加成
+            # "图 11: 图 1-7" 实测；caption 宏包提供星号形式）
+            out.append("\\begin{figure}[H]\n\\centering\n"
                        f"\\includegraphics[width=\\linewidth]{{{src}}}\n{cap}\n\\end{{figure}}\n")
         elif ev[0] == "table":
             rows = ev[1]
@@ -514,13 +544,18 @@ def _safe_stem(name: str) -> str:
 
 
 def _copy_images(images_dir: str, out_dir: Path) -> str:
-    """把图片复制到 out_dir/images/，返回相对链接前缀 'images/'。无图则空目录。"""
+    """把图片复制到 out_dir/images/，返回相对链接前缀 'images/'。无图则空目录。
+    顺手带封面：工作目录根的 cover.jpg（stage3 封面提取产物）一并复制。"""
     dst = out_dir / "images"
     dst.mkdir(exist_ok=True)
     if images_dir and Path(images_dir).is_dir():
         for f in Path(images_dir).iterdir():
             if f.is_file():
                 shutil.copy2(f, dst / f.name)
+    for cand in (out_dir / "cover.jpg", out_dir.parent / "cover.jpg"):
+        if cand.is_file():
+            shutil.copy2(cand, dst / "cover.jpg")
+            break
     return "images"
 
 
@@ -546,9 +581,13 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
             index_lines.append(f"- [{u['title']}]({fn})")
             idx += 1
         idx_path = bundle / "index.md"
+        if (bundle / "images" / "cover.jpg").is_file():
+            index_lines.insert(1, "\n![封面](images/cover.jpg)\n")
         idx_path.write_text("\n".join(index_lines) + "\n", encoding="utf-8")
         return [bundle]
     _copy_images(images_dir, out_dir)
+    if (out_dir / "images" / "cover.jpg").is_file():
+        front += "\n![封面](images/cover.jpg)\n"
     body = front + "\n" + "\n\n".join(render_unit_md(u, dialect) for u in units)
     md_path = out_dir / f"{_safe_stem(book_name)}.md"
     md_path.write_text(body, encoding="utf-8")
@@ -561,6 +600,8 @@ _TEX_PREAMBLE_ZH = r"""% !TeX program = xelatex
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{longtable}
+\usepackage{float}
+\usepackage{caption}
 \usepackage{extarrows}
 \usepackage{yhmath}
 \providecommand{\overparen}[1]{\wideparen{#1}}
@@ -572,6 +613,8 @@ _TEX_PREAMBLE_EN = r"""% !TeX program = xelatex
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{longtable}
+\usepackage{float}
+\usepackage{caption}
 \usepackage{extarrows}
 \usepackage{yhmath}
 \providecommand{\overparen}[1]{\wideparen{#1}}
@@ -587,9 +630,13 @@ def export_tex(units: list, out_dir: Path, book_name: str, title: str,
     body = "\n".join(render_unit_tex(u) for u in units)
     if full:
         pre = _TEX_PREAMBLE_ZH if zh else _TEX_PREAMBLE_EN
+        cover = ("\\begin{center}\\includegraphics[width=0.8\\linewidth]"
+                 "{images/cover.jpg}\\end{center}\n"
+                 if (out_dir / "images" / "cover.jpg").is_file() else "")
         doc = (pre + f"\\title{{{_tex_escape(title)}}}\n"
                + (f"\\author{{{_tex_escape(author)}}}\n" if author else "")
-               + "\\begin{document}\n\\maketitle\n\\tableofcontents\n"
+               + "\\begin{document}\n\\maketitle\n" + cover
+               + "\\tableofcontents\n"
                + body + "\n\\end{document}\n")
     else:
         doc = body + "\n"
@@ -637,12 +684,5 @@ def export_book(work_dir: str | Path, formats: set[str], *,
             produced.setdefault("tex", []).extend(export_tex(
                 units, work_dir, name, title, images_dir,
                 full=tex_full, zh=zh, author=author))
-    shared_images = work_dir / "images"
-    if shared_images.is_dir() and any(shared_images.iterdir()):
-        # 单文件 md / tex 与 images/ 同邻相对引用，随产物一并交付（分章 md 目录自含）
-        for fmt in ("md", "tex"):
-            if any(p.is_file() for p in produced.get(fmt, [])):
-                produced[fmt].append(shared_images)
-                break
     logger.info(f"  导出完成: {{{', '.join(f'{k}: {len(v)}' for k, v in produced.items())}}}")
     return produced

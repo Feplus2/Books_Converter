@@ -55,6 +55,29 @@ def reasoning_extra(base_url: str, model: str, level: str | None) -> dict:
 _JSON_RE = re.compile(r"\{.*\}", re.S)
 _BAD_ESC_RE = re.compile(r'\\(?!["\\/bfnrtu])')   # 不在 JSON 合法转义集内的孤反斜杠
 
+# JSON 合法转义(\b\f\t\n\r)被解码成控制字符后吃掉 LaTeX 命令首字母
+# （'\frown'→\x0crown、'\beta'→\x08eta、'\times'→\x09imes——高数 p161
+# \overset{\frown} 实测，19 个编译错误全由它级联）。
+# 只在 $…$ 数学段内恢复（散文里的换行/制表是合法空白，绝不许碰）。
+_CTRL_ESC_RE = re.compile(r"[\x08\x0c\x09\x0a\x0d](?=[a-zA-Z])")
+_CTRL_ESC_LETTER = {"\x08": "b", "\x0c": "f", "\x09": "t", "\x0a": "n", "\x0d": "r"}
+_MATH_SPAN_RE = re.compile(r"(\$\$.+?\$\$|\$[^$\n]+?\$)", re.S)
+
+
+def _restore_ctrl_escapes(obj):
+    """递归恢复字符串值里、$…$ 数学段内的控制字符 → LaTeX 命令字母。"""
+    if isinstance(obj, str):
+        parts = _MATH_SPAN_RE.split(obj)
+        for i in range(1, len(parts), 2):
+            parts[i] = _CTRL_ESC_RE.sub(
+                lambda m: "\\" + _CTRL_ESC_LETTER[m.group(0)], parts[i])
+        return "".join(parts)
+    if isinstance(obj, list):
+        return [_restore_ctrl_escapes(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _restore_ctrl_escapes(v) for k, v in obj.items()}
+    return obj
+
 
 def extract_json(content: str) -> dict | None:
     """从模型输出抽取最外层 JSON 对象；容忍 ```json 围栏。失败返回 None。
@@ -68,11 +91,11 @@ def extract_json(content: str) -> dict | None:
         return None
     raw = m.group(0)
     try:
-        return json.loads(raw)
+        return _restore_ctrl_escapes(json.loads(raw))
     except Exception:
         pass
     try:
-        return json.loads(_BAD_ESC_RE.sub(r"\\\\", raw))
+        return _restore_ctrl_escapes(json.loads(_BAD_ESC_RE.sub(r"\\\\", raw)))
     except Exception:
         return None
 

@@ -41,6 +41,7 @@ class TestMarkdown(unittest.TestCase):
         self.assertIn("[^1]", md)                                      # 脚注引用
         self.assertIn("[^1]: 参见《某书》第 7 页。", md)                  # 脚注定义（回链已剥）
         self.assertIn("![图1-1 示例](images/p0033_0.png)", md)
+        self.assertIn("\n\n$$H = \\sum_i", md)  # display 公式空行环绕成独立段落（居中渲染前提）
         self.assertIn("| 情绪 | 程度 |", md)
         self.assertIn("焦虑 \\| 紧张", md)                             # 单元格 | 转义
         self.assertIn("> 引用块。", md)
@@ -60,6 +61,7 @@ class TestTex(unittest.TestCase):
         self.assertIn("\\[H = \\sum_i p_i \\dot q_i - L \\qquad (3.47)\\]", tex)
         self.assertIn("\\footnote{参见《某书》第 7 页。}", tex)          # 内联脚注
         self.assertIn("含 \\& 符号 \\& 特殊\\%字符", tex)               # 特殊字符转义
+        self.assertIn("\\begin{figure}[H]", tex)            # 图片精确就位不漂移
         self.assertIn("\\includegraphics[width=\\linewidth]{images/p0033_0.png}", tex)
         self.assertIn("\\begin{longtable}", tex)
         self.assertIn("\\toprule", tex)
@@ -158,15 +160,40 @@ class TestExportBookLang(unittest.TestCase):
         self.assertIn("正文。", r3["md"][0].read_text(encoding="utf-8"))
 
     def test_images_dir_shipped_with_products(self):
-        # 单文件 md / tex 与 images/ 同邻相对引用：共享 images 目录随产物交付（只挂一次）
+        # images/ 落在工作目录与产物同邻；produced 只报文件/目录本体，
+        # 交付层（pipeline._deliver）按 <书名>/<格式>/ 复制并附带 images/
         td = self._mk_workdir(with_trans=False)
         imgs = Path(td) / "vlm" / "images"
         imgs.mkdir(exist_ok=True)
         (imgs / "p0001_0.png").write_bytes(b"\x89PNG")
         r = export_book(td, {"md", "tex"})
-        dirs = [p for f in ("md", "tex") for p in r.get(f, []) if p.is_dir()]
-        self.assertEqual([p.name for p in dirs], ["images"])
         self.assertTrue((Path(td) / "images" / "p0001_0.png").is_file())
+        self.assertTrue(all(p.is_file() for f in ("md", "tex") for p in r[f]))
+
+    def test_front_back_matter_included(self):
+        # 前页（前言 p1 keep）与后页（附录 p3 keep）不丢：md/tex 导出包含
+        td = self._mk_workdir(with_trans=False)
+        st = json.loads((Path(td) / "structure.json").read_text(encoding="utf-8"))
+        st["front_matter"] = [{"type": "preface", "label": "前言",
+                               "page_start": 1, "page_end": 1, "keep": True}]
+        st["back_matter"] = [{"type": "appendix", "label": "附录",
+                              "page_start": 3, "page_end": 3, "keep": True}]
+        (Path(td) / "structure.json").write_text(
+            json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        pb = json.loads((Path(td) / "popo_blocks.json").read_text(encoding="utf-8"))
+        pb[0]["page"], pb[1]["page"] = 2, 2  # 正文 → p2
+        pb.append({"id": 90, "type": "text", "content": "前言正文。",
+                   "page": 1, "source_id": "t:1"})
+        pb.append({"id": 91, "type": "text", "content": "附录正文。",
+                   "page": 3, "source_id": "t:1"})
+        (Path(td) / "popo_blocks.json").write_text(
+            json.dumps(pb, ensure_ascii=False), encoding="utf-8")
+        units = build_units(td, use_translations=False)
+        titles = [u["title"] for u in units]
+        self.assertEqual(titles[0], "前言")
+        self.assertEqual(titles[-1], "附录")
+        self.assertIn("第一章 测试", titles)
+        self.assertIn("前言正文。", units[0]["parts"][0])
 
     def test_no_trans_falls_back_orig(self):
         td = self._mk_workdir(with_trans=False)

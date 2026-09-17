@@ -151,6 +151,26 @@ class _StateDB:
 # 工具
 # ---------------------------------------------------------------------------
 
+def _reading_order(boxes: list) -> list:
+    """行感知阅读序：先按 y 聚行（垂直重叠 ≥50% 即同行），行内按 x 排序。
+    纯 y 主序在同行多图时被检测噪声翻转——高数 p24 的 2×2 图阵实测：
+    图1-7/1-8 整列互换（y 微差 1-8 在前）→ caption 与图配对错位。"""
+    rows: list[list] = []
+    for b in sorted(boxes, key=lambda b: (b[1], b[0])):
+        for row in rows:
+            r0 = row[0]
+            ov = min(b[3], r0[3]) - max(b[1], r0[1])
+            if ov > 0.5 * min(b[3] - b[1], r0[3] - r0[1]):
+                row.append(b)
+                break
+        else:
+            rows.append([b])
+    out = []
+    for row in rows:
+        out.extend(sorted(row, key=lambda b: b[0]))
+    return out
+
+
 def _synth_bbox(i: int, n: int) -> list[int]:
     """合成 bbox（0-1000 千分位）：页内顺序 → 单调递增 y。下游位置语义只需保序。"""
     step = 860 / max(n, 1)
@@ -714,7 +734,7 @@ class VlmProvider:
                     raise ValueError("bbox 全部退化")
                 boxes = merge_overlaps(boxes)
                 boxes = [snap_box_cc(page_img, b) for b in boxes]
-                boxes.sort(key=lambda b: (b[1], b[0]))  # 阅读序
+                boxes = _reading_order(boxes)  # 行感知阅读序（同行多图防 y 噪声翻转）
 
                 images_dir.mkdir(parents=True, exist_ok=True)
                 rect = page.rect  # PDF points

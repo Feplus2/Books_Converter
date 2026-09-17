@@ -13,7 +13,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import stage1_vlm
-from stage1_vlm import VlmProvider, _StateDB, _synth_bbox, _toc_scheme_hint
+from stage1_vlm import (VlmProvider, _StateDB, _reading_order, _synth_bbox,
+                        _toc_scheme_hint)
 from vlm_client import extract_json, reasoning_extra
 
 
@@ -376,6 +377,30 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(extract_json('{"a": "公式 $\\\\sqrt{x}$ 完"}'),
                          {"a": "公式 $\\sqrt{x}$ 完"})
         self.assertIsNone(extract_json('{"a": '))
+
+    def test_extract_json_ctrl_escapes(self):
+        """JSON 合法转义吃掉 LaTeX 命令首字母：'\\f'→\\x0c（\\frown→\\x0crown）、
+        '\\b'→\\x08（\\beta→\\x08eta）——只在 $…$ 数学段内恢复命令字母，
+        散文换行/制表是合法空白绝不许碰（高数 p161 \\overset{\\frown} 实测）。"""
+        raw = ('{"body": "弧 $\\overset{\\frown}{ACB}$ 与 $\\beta$'
+               '\\n下一段为散文"}')
+        d = extract_json(raw)
+        self.assertIn(r"$\overset{\frown}{ACB}$", d["body"])
+        self.assertIn(r"$\beta$", d["body"])
+        self.assertIn("下一段为散文", d["body"])
+        self.assertIn("\n", d["body"])   # 散文换行保持原样
+
+    def test_reading_order_row_aware(self):
+        # 高数 p24 的 2×2 图阵：y 微差会让纯 y 主序整列互换（图1-8 在 1-7 前）
+        fig17 = [100, 100, 400, 380]   # 左上（图1-7）
+        fig18 = [460, 96, 820, 380]    # 右上（图1-8，y 略小——检测噪声）
+        fig19 = [100, 420, 400, 700]   # 左下
+        fig110 = [460, 418, 820, 700]  # 右下
+        ordered = _reading_order([fig18, fig110, fig17, fig19])
+        self.assertEqual(ordered, [fig17, fig18, fig19, fig110])
+        # 单列上下图保持 y 序（行为不回归）
+        top, bottom = [100, 50, 400, 300], [100, 400, 400, 700]
+        self.assertEqual(_reading_order([bottom, top]), [top, bottom])
 
     def test_reasoning_map(self):
         # glm-5.3-flash 恒思考：off 也必须落到 low，永不下发 disabled（400 实证）

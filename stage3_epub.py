@@ -154,16 +154,23 @@ def _escape_attr(s: str) -> str:
 _LATEX_TYPO_RE = re.compile(r"\\qqud\b")
 _SINGLE_ARG_CMD_RE = re.compile(
     r"\\(slashed|bar|hat|tilde|vec|dot|ddot|breve|check|acute|grave)([a-zA-Z])")
+_SUB_PRIME_SWAP_RE = re.compile(r"_'(.)'")
+_TRAILING_LONE_BS_RE = re.compile(r"(?<!\\)\\$")
 
 
 def _sanitize_latex(latex: str) -> str:
     """模型 LaTeX 常见笔误的窄守卫清洗（只修确定的形态，其余原样）：
     - \qqud → \qquad（编号间距命令笔误，QFT eq.3.47 实测裸源码泄漏）；
     - 单参数命令粘连字母补花括号：\slashedp → \slashed{p}（\hbar 等固有
-      命令不受影响——反斜杠后紧跟命令名才命中）。"""
+      命令不受影响——反斜杠后紧跟命令名才命中）；
+    - 下标/撇号序颠倒：\Phi_'+'(a) → \Phi_+'(a)（教材 Φ'₊(a) 写法，
+      高数 p253 实测）；
+    - 剥行尾孤反斜杠（模型把闭合 $ 写成 \\$ 残留尾 \\，高数 (7-11)
+      实测级联炸后续 \\[ \\]）。"""
     latex = _LATEX_TYPO_RE.sub(r"\\qquad", latex)
     latex = _SINGLE_ARG_CMD_RE.sub(lambda m: f"\\{m.group(1)}{{{m.group(2)}}}", latex)
-    return latex
+    latex = _SUB_PRIME_SWAP_RE.sub(r"_\1'", latex)
+    return _TRAILING_LONE_BS_RE.sub("", latex.rstrip())
 
 
 def _strip_alignment_amp(latex: str) -> str:

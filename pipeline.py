@@ -341,13 +341,39 @@ def main():
                 pdf_path=str(pdf_path),
                 translations=translations,
             )
-            # 复制一份到输出目录（--output-dir 生效；默认即 PDF 所在目录）
-            final_path = output_base / epub_path.name
-            if epub_path != final_path:
-                import shutil
-                shutil.copy2(epub_path, final_path)
-                logger.info(f"  EPUB 已复制到: {final_path}")
-                epub_path = final_path
+            # 复制产物到输出目录：<输出>/<书名>/<格式>/ 每格式自含子目录
+            # （md/tex 含 images/；分章 md 目录内容平铺进格式目录）
+            import shutil
+
+            def _deliver(fmt: str, paths: list, with_images: bool) -> list[str]:
+                tgt = output_base / book_name / fmt
+                tgt.mkdir(parents=True, exist_ok=True)
+                delivered: list[str] = []
+                for p in paths:
+                    p = Path(p)
+                    if p.is_dir():
+                        for child in p.iterdir():
+                            dst = tgt / child.name
+                            if child.is_dir():
+                                if dst.exists():
+                                    shutil.rmtree(dst)
+                                shutil.copytree(child, dst)
+                            else:
+                                shutil.copy2(child, dst)
+                        delivered.append(str(tgt))
+                    else:
+                        dst = tgt / p.name
+                        if p != dst:
+                            shutil.copy2(p, dst)
+                        delivered.append(str(dst))
+                if with_images:
+                    src_images = work_dir / "images"
+                    if src_images.is_dir() and not (tgt / "images").exists():
+                        shutil.copytree(src_images, tgt / "images")
+                return delivered
+
+            epub_path = Path(_deliver("epub", [epub_path], with_images=False)[0])
+            logger.info(f"  EPUB 已复制到: {epub_path}")
             products["epub"] = [str(epub_path)]
             # ── 平行导出（Markdown/TeX，--format 多选）──
             extra_formats = {f.strip() for f in str(args.formats).split(",")} - {"epub", ""}
@@ -361,18 +387,9 @@ def main():
                         progress=lambda d, f=None: pw.update_stage(s_epub, "EPUB 生成", d, f),
                     )
                     for fmt, paths in produced.items():
-                        for p in paths:
-                            fp = output_base / p.name
-                            if p != fp:
-                                import shutil
-                                if p.is_dir():
-                                    if fp.exists():
-                                        shutil.rmtree(fp)
-                                    shutil.copytree(p, fp)
-                                else:
-                                    shutil.copy2(p, fp)
-                                logger.info(f"  {fmt.upper()} 已复制到: {fp}")
-                            products.setdefault(fmt, []).append(str(fp))
+                        delivered = _deliver(fmt, paths, with_images=True)
+                        logger.info(f"  {fmt.upper()} 已复制到: {delivered}")
+                        products.setdefault(fmt, []).extend(delivered)
                 except Exception as e:
                     logger.error(f"导出 {sorted(extra_formats)} 失败（EPUB 不受影响）: {e}")
         except Exception as e:

@@ -489,6 +489,9 @@ def _normalize_title(text: str) -> str:
     for cmd, uni in _LATEX_SYMBOL_MAP:
         t = t.replace(cmd, uni)
     t = re.sub(r"\\([A-Za-z]+)", r"\1", t)  # 未收录命令保留字母主体
+    # LaTeX 间距命令是纯排版噪声（目录 '\cos \omega x' ↔ 正文 '\cos\omega x\,'
+    # 实测失配——高数 '二、e^{λx}[P_l(x)…] 型' 锚点落空）
+    t = re.sub(r"\\[,;:! ]", "", t)
     t = re.sub(r"[{}]", "", t)               # 分组括号无上位含义
     t = t.replace("^", "").replace("_", "")  # 上下标标记（'w^{±}'→'w±'）
     # 弯引号/弯撇号统一为直引（OCR 与目录常不一致）
@@ -1582,6 +1585,10 @@ _JUNK_SINGLE_CJK_RE = re.compile(r"^[一-鿿]$")
 _JUNK_BYLINE_RE = re.compile(r"(?:^by\s+\S|[（(].*(?:著|译|主编)[)）]$|(?:著|编著|译注|主编|绘)$)",
                              re.I)
 _JUNK_SINGLE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z'’-]*$")
+# 运行页眉形状（章名+节名+页码后缀：'第三章 习题 3-1（第 132 页）'）：
+# 真标题绝不带（第 N 页）后缀——高数 p412（附录答案区）实测幻影标题。
+_JUNK_RUNNING_HEAD_RE = re.compile(
+    r"^第[一二三四五六七八九十百零〇0-9]+章\s*\S.*（第\s*\d+\s*页）\s*$")
 
 
 def _veto_junk_titles(blocks: list, toc_entries: list) -> int:
@@ -1610,6 +1617,12 @@ def _veto_junk_titles(blocks: list, toc_entries: list) -> int:
         if b.get("_anchored"):
             continue              # 锚得上 = 目录认可的强证据，豁免
         text = (b.get("content") or "").strip()
+        if _JUNK_RUNNING_HEAD_RE.match(text):
+            # 运行页眉（章名+节名+页码后缀），任何形状都降回正文
+            b["type"] = "text"
+            b["level"] = -1
+            n += 1
+            continue
         if _title_shape(text) != "plain":
             continue              # 带编号形状的有形状栈管，不归这里
         if anchors and _match_anchor(text, anchors):

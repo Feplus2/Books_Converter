@@ -307,5 +307,22 @@ ok(blocks16[3].get("_anchored") and blocks16[3].get("_pos_num") == "12",
    "level=0 投票缺失章题块可当选（并记章号 12）")
 ok(not blocks16[4].get("_anchored"), "'12.1 …' 本章小节不被选为章题")
 
+# ── 17. 运行页眉降格 + LaTeX 间距命令归一（病例 042）──
+from stage2_common import _normalize_title, _veto_junk_titles  # noqa
+
+blocks17 = [
+    {"type": "title", "level": 1, "page": 412,
+     "content": "第三章 习题 3-1（第 132 页）"},
+    {"type": "title", "level": 1, "page": 100, "content": "第三章 微分中值定理"},
+]
+toc17 = [{"text": "第三章 微分中值定理", "level": 1, "page": 96}]
+_veto_junk_titles(blocks17, toc17)
+ok(blocks17[0]["type"] == "text", "运行页眉（章名+节名+页码后缀）降回正文")
+ok(blocks17[1]["type"] == "title", "真章标题不受页眉规则影响")
+
+norm_a = _normalize_title("f(x)=\\mathrm{e}^{\\lambda x}[\\,P_l(x)\\cos\\omega x\\,]")
+norm_b = _normalize_title("f(x)=\\mathrm{e}^{\\lambda x}[P_l(x)\\cos \\omega x]")
+ok(norm_a == norm_b, "LaTeX 间距命令 \\, 归一对齐（cos\\omega x\\, ↔ cos \\omega x）")
+
 print(f"\n{passed} 过 / {failed} 挂")
 sys.exit(1 if failed else 0)
