@@ -141,6 +141,10 @@ _TEX_MATH_UNICODE = {
     "∘": r"\circ", "∠": r"\angle", "°": r"^\circ",
     "′": "'", "″": "''", "‴": "'''", "‵": "`",
     "ℏ": r"\hbar", "ℓ": r"\ell", "ℜ": r"\Re", "ℑ": r"\Im", "ℵ": r"\aleph",
+    "✓": r"\checkmark", "✔": r"\checkmark", "✗": r"\times", "✘": r"\times",
+    "●": r"\bullet", "➡": r"\Rightarrow", "➜": r"\rightarrow",
+    "≦": r"\leqq", "≧": r"\geqq", "☆": r"\star", "꜀": "'",
+    "⁽": "^(", "⁾": "^)", "❖": r"\blacklozenge",
     "ℝ": r"\mathbb{R}", "ℤ": r"\mathbb{Z}", "ℕ": r"\mathbb{N}",
     "ℚ": r"\mathbb{Q}", "ℂ": r"\mathbb{C}",
     "⁰": "^0", "¹": "^1", "²": "^2", "³": "^3", "⁴": "^4", "⁵": "^5",
@@ -186,11 +190,26 @@ _GREEK_GLUE_RE = re.compile(
     r"(?=[a-zA-Z])")
 
 
+_SUB_ACCENT_RE = re.compile(
+    r"_(\\(?:bar|hat|tilde|vec|dot|ddot|breve|check|acute|grave))\s*"
+    r"(\\[a-zA-Z]+|[a-zA-Z])")
+# \text{^\circ\mathrm{C}}：文本壳里塞上下标必炸（Missing $，机械手册实测）；
+# 内层为纯 ASCII 数学内容才拆壳（含 CJK 的 \text 是合法用法，不动）
+_TEXT_MATH_SHELL_RE = re.compile(
+    r"\\text\{((?:[^{}]|\{[^{}]*\})*[\^_](?:[^{}]|\{[^{}]*\})*)\}")
+_TEXT_NEST_RE = re.compile(r"\\text\{\\text\{([^{}]*)\}\}")
+
+
 def _tex_math_sanitize(s: str) -> str:
     """数学体出闸：希腊命令粘连字母补空格（\\lambdax→\\lambda x，unicode 映射
-    与模型笔误同源）→ unicode 映射（λ→\\lambda、₀→_0、′→'，命令后紧跟字母
-    同样补空格）→ 剩余非 ASCII 连续段包 \\text{}（圈码①/CJK 标点走 ctex 字体）。"""
+    与模型笔误同源）→ 下标裸重音命令补原子（E_\\bar\\nu→E_{\\bar{\\nu}}，
+    QFT l.8272 Missing { 实测）→ unicode 映射（λ→\\lambda、₀→_0、′→'，命令
+    后紧跟字母同样补空格）→ 剩余非 ASCII 连续段包 \\text{}。"""
     s = _GREEK_GLUE_RE.sub(r"\\\1 ", s)
+    s = _SUB_ACCENT_RE.sub(r"_{\1{\2}}", s)
+    s = _TEXT_MATH_SHELL_RE.sub(
+        lambda m: m.group(1) if all(ord(c) < 128 for c in m.group(1))
+        else m.group(0), s)
     out = []
     for i, ch in enumerate(s):
         rep = _TEX_MATH_UNICODE.get(ch)
@@ -202,7 +221,14 @@ def _tex_math_sanitize(s: str) -> str:
             rep += " "
         out.append(rep)
     s = "".join(out)
-    return _NONASCII_RUN_RE.sub(lambda m: f"\\text{{{m.group(0)}}}", s)
+    # unicode 映射可能在 \text{} 壳内造出上下标（℃→^\circ\mathrm{C}，
+    # 机械手册 l.12350 Missing $ 实测）——拆壳在映射后再扫一遍
+    s = _TEXT_MATH_SHELL_RE.sub(
+        lambda m: m.group(1) if all(ord(c) < 128 for c in m.group(1))
+        else m.group(0), s)
+    s = _NONASCII_RUN_RE.sub(lambda m: f"\\text{{{m.group(0)}}}", s)
+    # 壳内 CJK 被非 ASCII 包裹规则再包一层 → 塌缩回单层（合法但聒噪）
+    return _TEXT_NEST_RE.sub(r"\\text{\1}", s)
 
 
 def _clean_latex(s: str) -> str:
@@ -308,7 +334,7 @@ def _emit_tokens_md(txt: str) -> str:
     return _MARK_RE.sub(rep, txt)
 
 
-def _emit_tokens_tex(txt: str, fns: dict[str, str]) -> str:
+def _emit_tokens_tex(txt: str, fns: dict[str, str], in_cell: bool = False) -> str:
     parts = _MARK_RE.split(txt)
     out = []
     # split 结果：[text, kind, body, text, kind, body, ...]
@@ -320,7 +346,12 @@ def _emit_tokens_tex(txt: str, fns: dict[str, str]) -> str:
             if kind == "MATHI":
                 out.append(f"${_tex_math_sanitize(body)}$")
             elif kind == "MATHB":
-                out.append(f"\n\\[{_tex_math_sanitize(body)}\\]\n")
+                if in_cell:
+                    # 表格单元格禁 display 数学（longtable l/p 列内 \\[\\] 必炸，
+                    # 机械设计手册 21 处 Missing $ 级联实测）——降级行内
+                    out.append(f"${_tex_math_sanitize(body)}$")
+                else:
+                    out.append(f"\n\\[{_tex_math_sanitize(body)}\\]\n")
             else:
                 out.append(f"\\footnote{{{_tex_escape(fns.get(body, ''))}}}")
             i += 3
@@ -328,6 +359,19 @@ def _emit_tokens_tex(txt: str, fns: dict[str, str]) -> str:
             out.append(_tex_escape(parts[i]))
             i += 1
     return "".join(out)
+
+
+def _col_spec_tex(rows: list[list[str]], ncol: int) -> str:
+    """longtable 列宽按各列最大单元格长度加权（'l' 列不换行，长文本单元格
+    做出 4386pt Overfull 实测）；raggedright 防窄列两端对齐拉花。"""
+    weights: list[int] = []
+    for ci in range(ncol):
+        w = max((len(_MARK_RE.sub("", r[ci])) for r in rows if ci < len(r)),
+                default=1)
+        weights.append(max(3, min(w, 30)))
+    total = sum(weights)
+    return "".join(">{\\raggedright\\arraybackslash}p{%.3f\\linewidth}"
+                   % (w / total) for w in weights)
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +385,16 @@ def _md_escape_cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ")
 
 
-def render_unit_md(unit: dict, dialect: str = "gfm") -> str:
+_NOTES_LABEL = {"zh": "注释", "ja": "注"}
+_TOC_LABEL = {"zh": "目录", "ja": "目次"}
+
+
+def _notes_label(lang: str) -> str:
+    """尾注列表标题随书语言（FG 英文书 EN preamble 下 '注释' 缺字形实测）。"""
+    return _NOTES_LABEL.get(lang, "Notes")
+
+
+def render_unit_md(unit: dict, dialect: str = "gfm", lang: str = "zh") -> str:
     """一个单元 → Markdown 文本。脚注定义收章末（[^N]: … 语法）。"""
     from bs4 import BeautifulSoup
     out = []
@@ -408,7 +461,7 @@ def render_unit_md(unit: dict, dialect: str = "gfm") -> str:
     if orphans:
         # 未锚定尾注：GFM 不渲染无引用的 [^] 定义 → 退化为显式注释列表
         # （GFM/Pandoc 均安全；失败方向=不动作，内容不丢）
-        out.append("\n**注释**\n")
+        out.append(f"\n**{_notes_label(lang)}**\n")
         for t in orphans:
             out.append(f"- {t}")
     return "\n".join(out).replace("\n\n\n", "\n\n").strip() + "\n"
@@ -435,6 +488,14 @@ for _ch, _cmd in _TEX_MATH_UNICODE.items():
         _TEX_TEXT_EXTRA[_ch] = "--"
     else:
         _TEX_TEXT_EXTRA[_ch] = _cmd
+# 纯文本直替（非数学命令）：制表框线 → 破折号/竖线（izuno 96×'─' 缺字形实测）、
+# 方向控制符剥除（must_defend U+200F 实测）
+_TEX_TEXT_EXTRA.update({
+    "─": "—", "│": "|", "┌": "+", "┐": "+", "└": "+", "┘": "+",
+    "├": "+", "┤": "+", "┬": "+", "┴": "+", "┼": "+",
+    "‏": "", "‎": "", "­": "",
+    "　": " ",  # U+3000 全角空格（Times 无字形，机械手册 1582 处实测）
+})
 _TEX_TEXT_EXTRA.update({chr(0x2460 + i): f"\\textcircled{{{i + 1}}}"
                         for i in range(20)})
 _TEX_TEXT_EXTRA.update({c: t for c, t in zip(
@@ -444,11 +505,16 @@ _TEX_SPECIAL = str.maketrans({**_TEX_SPECIAL_BASE, **_TEX_TEXT_EXTRA})
 _TEX_LEVEL = {1: "chapter", 2: "section", 3: "subsection", 4: "subsubsection", 5: "paragraph"}
 
 
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _tex_escape(s: str) -> str:
-    return s.translate(_TEX_SPECIAL)
+    # C0 控制字符是 VLM 输出的工件（must_defend U+0019 实测），进 tex 即
+    # "Text line contains an invalid character"——剥除，内容无损
+    return _CTRL_CHARS_RE.sub("", s).translate(_TEX_SPECIAL)
 
 
-def render_unit_tex(unit: dict) -> str:
+def render_unit_tex(unit: dict, lang: str = "zh") -> str:
     """一个单元 → TeX 片段。脚注直接用 \footnote{…} 内联。"""
     from bs4 import BeautifulSoup
     out = []
@@ -513,16 +579,21 @@ def render_unit_tex(unit: dict) -> str:
             rows = ev[1]
             ncol = max(len(r) for r in rows)
             rows = [(r + [""] * ncol)[:ncol] for r in rows]
-            spec = "l" * ncol
-            out.append("\\begin{longtable}{" + spec + "}\\toprule")
-            out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns)}}}" for c in rows[0])
-                       + " \\\\ \\midrule")
-            for r in rows[1:]:
-                out.append(" & ".join(_emit_tokens_tex(c, fns) for c in r) + " \\\\")
+            spec = _col_spec_tex(rows, ncol)
+            out.append("\\begin{longtable}{" + spec + "}\\toprule\\relax")
+            out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns, in_cell=True)}}}" for c in rows[0])
+                       + " \\\\ \\midrule\\relax")
+            for ri, r in enumerate(rows[1:]):
+                # 非末行 \\ 后 \relax：次行首字符为 '[' 的单元格不被吞成 \\[dimen]
+                # 可选参数（机械手册 '[图]'/'[图：…]' 单元格实测）；末行不加——
+                # \bottomrule 的 \noalign 必须紧跟 \\（Misplaced \noalign 599 实测）
+                tail = " \\\\ \\relax" if ri < len(rows) - 2 else " \\\\"
+                out.append(" & ".join(_emit_tokens_tex(c, fns, in_cell=True) for c in r)
+                           + tail)
             out.append("\\bottomrule\\end{longtable}\n")
     if orphans:
         # 未锚定尾注：章末显式注释列表（内容不丢）
-        out.append("\n\\paragraph{注释}\n\\begin{itemize}")
+        out.append(f"\n\\paragraph{{{_notes_label(lang)}}}\n\\begin{{itemize}}")
         for t in orphans:
             out.append("\\item " + _tex_escape(t))
         out.append("\\end{itemize}\n")
@@ -562,7 +633,7 @@ def _copy_images(images_dir: str, out_dir: Path) -> str:
 
 def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
                     images_dir: str, *, split: bool = False,
-                    dialect: str = "gfm") -> list[Path]:
+                    dialect: str = "gfm", lang: str = "zh") -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     front = (f"---\ntitle: {title}\n---\n" if dialect == "pandoc"
              else f"# {title}\n")
@@ -573,10 +644,10 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
         _copy_images(images_dir, bundle)
         chapters_dir = bundle / "chapters"
         chapters_dir.mkdir(exist_ok=True)
-        index_lines = [front, "\n## 目录\n"]
+        index_lines = [front, f"\n## {_TOC_LABEL.get(lang, 'Contents')}\n"]
         idx = 0
         for u in units:
-            md = render_unit_md(u, dialect)
+            md = render_unit_md(u, dialect, lang)
             fn = f"chapters/{_slug(u['title'], idx)}.md"
             (bundle / fn).write_text(md, encoding="utf-8")
             index_lines.append(f"- [{u['title']}]({fn})")
@@ -589,7 +660,7 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
     _copy_images(images_dir, out_dir)
     if (out_dir / "images" / "cover.jpg").is_file():
         front += "\n![封面](images/cover.jpg)\n"
-    body = front + "\n" + "\n\n".join(render_unit_md(u, dialect) for u in units)
+    body = front + "\n" + "\n\n".join(render_unit_md(u, dialect, lang) for u in units)
     md_path = out_dir / f"{_safe_stem(book_name)}.md"
     md_path.write_text(body, encoding="utf-8")
     return [md_path]
@@ -597,40 +668,77 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
 
 _TEX_PREAMBLE_ZH = r"""% !TeX program = xelatex
 \documentclass[UTF8,12pt]{ctexbook}
+\IfFontExistsTF{Times New Roman}{\setmainfont{Times New Roman}}{%
+  \IfFontExistsTF{Liberation Serif}{\setmainfont{Liberation Serif}}{%
+    \IfFontExistsTF{Noto Serif}{\setmainfont{Noto Serif}}{}}}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{longtable}
 \usepackage{float}
 \usepackage{caption}
 \usepackage{extarrows}
 \usepackage{yhmath}
+\usepackage{slashed}
 \providecommand{\overparen}[1]{\wideparen{#1}}
 \usepackage{hyperref}
 """
 _TEX_PREAMBLE_EN = r"""% !TeX program = xelatex
 \documentclass[12pt]{book}
+\usepackage{fontspec}
+\IfFontExistsTF{Times New Roman}{\setmainfont{Times New Roman}}{%
+  \IfFontExistsTF{Liberation Serif}{\setmainfont{Liberation Serif}}{%
+    \IfFontExistsTF{Noto Serif}{\setmainfont{Noto Serif}}{}}}
+\usepackage{xeCJK}
+\IfFontExistsTF{Yu Gothic}{\setCJKmainfont{Yu Gothic}}{%
+  \IfFontExistsTF{Microsoft YaHei}{\setCJKmainfont{Microsoft YaHei}}{%
+    \IfFontExistsTF{SimSun}{\setCJKmainfont{SimSun}}{%
+      \IfFontExistsTF{Noto Sans CJK SC}{\setCJKmainfont{Noto Sans CJK SC}}{}}}}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{longtable}
 \usepackage{float}
 \usepackage{caption}
 \usepackage{extarrows}
 \usepackage{yhmath}
+\usepackage{slashed}
+\providecommand{\overparen}[1]{\wideparen{#1}}
+\usepackage{hyperref}
+"""
+_TEX_PREAMBLE_JA = r"""% !TeX program = xelatex
+\documentclass[12pt]{book}
+\usepackage{xeCJK}
+\IfFontExistsTF{Yu Gothic}{\setCJKmainfont{Yu Gothic}}{%
+  \IfFontExistsTF{MS Gothic}{\setCJKmainfont{MS Gothic}}{%
+    \IfFontExistsTF{Noto Sans CJK JP}{\setCJKmainfont{Noto Sans CJK JP}}{%
+      \IfFontExistsTF{MS Mincho}{\setCJKmainfont{MS Mincho}}{}}}}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{extarrows}
+\usepackage{yhmath}
+\usepackage{slashed}
 \providecommand{\overparen}[1]{\wideparen{#1}}
 \usepackage{hyperref}
 """
 
 
 def export_tex(units: list, out_dir: Path, book_name: str, title: str,
-               images_dir: str, *, full: bool = True, zh: bool = True,
+               images_dir: str, *, full: bool = True, lang: str = "zh",
                author: str = "") -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     _copy_images(images_dir, out_dir)
-    body = "\n".join(render_unit_tex(u) for u in units)
+    body = "\n".join(render_unit_tex(u, lang) for u in units)
     if full:
-        pre = _TEX_PREAMBLE_ZH if zh else _TEX_PREAMBLE_EN
+        pre = {"zh": _TEX_PREAMBLE_ZH, "ja": _TEX_PREAMBLE_JA}.get(
+            lang, _TEX_PREAMBLE_EN)
         cover = ("\\begin{center}\\includegraphics[width=0.8\\linewidth]"
                  "{images/cover.jpg}\\end{center}\n"
                  if (out_dir / "images" / "cover.jpg").is_file() else "")
@@ -657,7 +765,7 @@ def export_book(work_dir: str | Path, formats: set[str], *,
     meta = structure.get("metadata", {})
     title = meta.get("title") or work_dir.name
     author = ", ".join(meta.get("authors", []) or [])
-    zh = meta.get("language", "zh") == "zh"
+    book_lang = meta.get("language", "zh") or "zh"
 
     has_trans = (work_dir / "translations.json").is_file()
     langs = (["orig", "trans"] if export_lang == "both" and has_trans
@@ -679,11 +787,11 @@ def export_book(work_dir: str | Path, formats: set[str], *,
             _report(f"导出 Markdown（{lang}）…", None)
             produced.setdefault("md", []).extend(export_markdown(
                 units, work_dir, name, title, images_dir,
-                split=md_split, dialect=md_dialect))
+                split=md_split, dialect=md_dialect, lang=book_lang))
         if "tex" in formats:
             _report(f"导出 TeX（{lang}）…", None)
             produced.setdefault("tex", []).extend(export_tex(
                 units, work_dir, name, title, images_dir,
-                full=tex_full, zh=zh, author=author))
+                full=tex_full, lang=book_lang, author=author))
     logger.info(f"  导出完成: {{{', '.join(f'{k}: {len(v)}' for k, v in produced.items())}}}")
     return produced

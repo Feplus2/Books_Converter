@@ -68,11 +68,109 @@ class TestTex(unittest.TestCase):
 
     def test_full_vs_fragment(self):
         with tempfile.TemporaryDirectory() as td:
-            full = export_tex([_unit()], Path(td), "t", "测试书", "", full=True, zh=True)[0]
-            frag = export_tex([_unit()], Path(td), "t2", "测试书", "", full=False, zh=True)[0]
+            full = export_tex([_unit()], Path(td), "t", "测试书", "", full=True, lang="zh")[0]
+            frag = export_tex([_unit()], Path(td), "t2", "测试书", "", full=False, lang="zh")[0]
             self.assertIn("\\documentclass", full.read_text(encoding="utf-8"))
             self.assertIn("ctexbook", full.read_text(encoding="utf-8"))
             self.assertNotIn("\\documentclass", frag.read_text(encoding="utf-8"))
+
+    def test_booktabs_rule_relax(self):
+        """booktabs 规则后 \\relax：首列以 '(' 起头的行不被吞成 trim 参数
+        （FG '(Sad) blue…' 单元格 207 个 Undefined control sequence 实测）。"""
+        tex = render_unit_tex(_unit())
+        self.assertIn("\\toprule\\relax", tex)
+        self.assertIn("\\midrule\\relax", tex)
+        self.assertNotIn("\rel", tex.replace("\\relax", ""))  # 防 \r 回车逃逸
+
+    def test_preamble_lang_selection(self):
+        """ja → xeCJK+日文字体（izuno lmroman 缺字 xelatex 段错误实测）；
+        三 preamble 全带 slashed（QFT \\slashed undefined 实测）。"""
+        with tempfile.TemporaryDirectory() as td:
+            ja = export_tex([_unit()], Path(td), "ja", "伊豆の踊子", "",
+                            full=True, lang="ja")[0].read_text(encoding="utf-8")
+            self.assertIn("xeCJK", ja)
+            self.assertIn("Yu Gothic", ja)
+            self.assertIn("slashed", ja)
+            en = export_tex([_unit()], Path(td), "en", "QFT", "",
+                             full=True, lang="en")[0].read_text(encoding="utf-8")
+            self.assertIn("slashed", en)
+            self.assertIn("xeCJK", en)  # EN 也带 CJK 兜底（[插图：]占位符实测）
+            # fontspec 必须先于 \IfFontExistsTF（EN preamble 顺序事故实测）
+            self.assertLess(en.find("fontspec"), en.find("IfFontExistsTF"))
+
+    def test_sub_accent_atom(self):
+        """E_\\bar\\nu → E_{\\bar{\\nu}}（QFT l.8272 Missing { 实测）。"""
+        from stage3_export import _tex_math_sanitize
+        self.assertEqual(_tex_math_sanitize(r"E_\bar\nu"), r"E_{\bar{\nu}}")
+        self.assertEqual(_tex_math_sanitize(r"x_\hat p"), r"x_{\hat{p}}")
+        # 已带花括号的原子不动（不动作）
+        self.assertEqual(_tex_math_sanitize(r"E_{\bar{\nu}}"), r"E_{\bar{\nu}}")
+
+    def test_ctrl_chars_stripped(self):
+        """C0 控制字符（VLM 工件，must_defend U+0019 实测）进 tex 前剥除。"""
+        from stage3_export import _tex_escape
+        self.assertEqual(_tex_escape("abc\x19def"), "abcdef")
+        self.assertEqual(_tex_escape("换行\n保留\t制表"), "换行\n保留\t制表")
+
+    def test_checkmark_mapped(self):
+        """✓/✔ → $\\checkmark$（FG 量表 (✓) 列 lmroman 缺字形实测）。"""
+        from stage3_export import _tex_escape, _tex_math_sanitize
+        self.assertEqual(_tex_escape("(✓)"), r"($\checkmark$)")
+        self.assertEqual(_tex_math_sanitize("✓"), r"\checkmark")
+
+    def test_notes_label_localized(self):
+        """尾注标题随书语言：英文书 'Notes'（FG '注释' 缺字形实测），日文 '注'。"""
+        html = ('<p>正文。</p><aside class="footnotes"><hr/>'
+                '<p class="footnote">¹ orphan.</p></aside>')
+        unit = {"kind": "chapter", "title": "Ch", "parts": [html], "subs": []}
+        self.assertIn("\\paragraph{Notes}", render_unit_tex(unit, lang="en"))
+        self.assertIn("\\paragraph{注释}", render_unit_tex(unit, lang="zh"))
+        self.assertIn("**Notes**", render_unit_md(unit, lang="en"))
+
+    def test_display_math_demoted_in_cell(self):
+        """单元格内 display 数学降级行内（机械手册 21 处 Missing $ 级联实测）。"""
+        html = ('<table><thead><tr><th>公式</th><th>说明</th></tr></thead>'
+                '<tbody><tr><td><math alttext="\\Delta P" display="block"></math></td>'
+                '<td>单元格</td></tr></tbody></table>')
+        tex = render_unit_tex({"kind": "chapter", "title": "Ch", "parts": [html], "subs": []})
+        self.assertNotIn("\\[\n", tex)
+        self.assertIn("$\\Delta P$", tex)
+
+    def test_col_spec_weighted_p(self):
+        """longtable 列宽加权 p 列（'l' 列 4386pt Overfull 实测）。"""
+        from stage3_export import _col_spec_tex
+        rows = [["型号", "一段很长很长很长很长很长很长很长很长的说明文字"], ["G1", "短"]]
+        spec = _col_spec_tex(rows, 2)
+        self.assertIn("\\raggedright", spec)
+        self.assertIn("p{", spec)
+        self.assertNotIn("}{l}", spec)
+
+    def test_bracket_cell_after_rowbreak(self):
+        """非末行 \\ 后 \\relax：'[' 起头单元格不被吞成 \\\\[dimen]（机械手册
+        '[图]'/'[图：…]' 单元格实测）；末行无 \\relax——\\bottomrule 的
+        \\noalign 必须紧跟 \\\\（Misplaced \\noalign 599 实测）。"""
+        html = ('<table><thead><tr><th>A</th><th>B</th></tr></thead>'
+                '<tbody><tr><td>x</td><td>y</td></tr>'
+                '<tr><td>[图]</td><td>说明</td></tr></tbody></table>')
+        tex = render_unit_tex({"kind": "chapter", "title": "Ch", "parts": [html], "subs": []})
+        self.assertRegex(tex, r"x & y \\\\ \\relax")
+        self.assertRegex(tex, r"\[图\] & 说明 \\\\(\s*)\\bottomrule")
+        self.assertNotIn("\\relax\\bottomrule", tex)
+
+    def test_fullwidth_space_mapped(self):
+        """U+3000 全角空格 → 空格（Times 无字形，机械手册 1582 处实测）。"""
+        from stage3_export import _tex_escape
+        self.assertEqual(_tex_escape("值　≦　☆"), "值 $\\leqq$ $\\star$")
+
+    def test_text_shell_with_superscript_unwrapped(self):
+        """\\text{^\\circ\\mathrm{C}} 文本壳塞上下标必炸 → 纯 ASCII 拆壳
+        （机械手册 Missing $ 实测）；含 CJK 的合法 \\text 不动。"""
+        from stage3_export import _tex_math_sanitize
+        self.assertEqual(_tex_math_sanitize(r"(\text{^\circ\mathrm{C}})"),
+                         r"(^\circ\mathrm{C})")
+        # ℃ 先被 unicode 映射进壳内再拆（顺序事故，机械手册 l.12350 实测）
+        self.assertEqual(_tex_math_sanitize(r"(\text{℃})"), r"(^\circ\mathrm{C})")
+        self.assertEqual(_tex_math_sanitize(r"\text{实际值}"), r"\text{实际值}")
 
 
 class TestMarkdownLayout(unittest.TestCase):

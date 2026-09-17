@@ -1395,3 +1395,44 @@
   按新语义改；全测试链绿；gaoshu/qft/FG/hanyu 重建 QC 黄（固有），FG 红 2
   条为已知挂账（III. 长度帽 + Fifty Ways em-dash，T13/T12）。
 - **状态**：已修复并验证（FG 挂账照旧）。
+
+## 病例 045｜TeX 导出品控三轮 — booktabs trim / 字体链 / 单元格 display / 列宽
+
+- **`\midrule` 吞单元格**（FG 207 错误）：booktabs 规则（`\toprule/\midrule`）
+  后视 `(` 为 trim 参数——首列以 `(` 起头的行（'(Sad) blue…'）被吞。
+  修：规则后加 `\relax`。**双错教训**：初修写成 `"\toprule\relax"`（Python
+  串 `\r`=回车，产 `\toprule\rel elax` 脏文本），测试串同样写错双双通过；
+  二次修复补 `assertNotIn("\rel")` 防回车逃逸。
+- **`\slashed` undefined**（QFT 81 错误）：三 preamble 补 `slashed` 宏包。
+- **日文 preamble 缺失**（izuno xelatex 段错误+全文缺字符）：`zh` 布尔改
+  `lang` 三态，新增 `_TEX_PREAMBLE_JA`（xeCJK + Yu Gothic→MS Gothic→
+  Noto→MS Mincho 回退链）；metadata.language='ja' 实测命中。
+- **缺字符长尾**：`_TEX_MATH_UNICODE` 补 ✓✔✗✘●➡➜⁽⁾❖；`_TEX_TEXT_EXTRA`
+  补制表框线（─│┌┐…→—/|/+）与方向控制符剥除（U+200E/F、软连字符）；
+  ZH/EN preamble 主字体 Times New Roman 回退链（西里尔：hanyu 俄语引文
+  562 缺字符）；EN preamble 加 xeCJK（`[插图：]` 占位符的 CJK 兜底）+
+  **fontspec 必须先于 \IfFontExistsTF**（EN 四书各 7 错实测）。
+- **单元格 display 数学级联炸**（jixie 21×Missing $）：longtable l/p 列内
+  `\[…\]` 必炸——`_emit_tokens_tex(in_cell=True)` 降级行内 `$…$`。
+- **longtable 列宽**（jixie 4386pt Overfull）：'l' 列不换行——`_col_spec_tex`
+  按各列最大单元格长度加权 p{…\linewidth} + raggedright；`array` 宏包
+  显式进 preamble（该 MiKTeX 内核未自动带 `\arraybackslash`，10531 错实测）。
+- **C0 控制字符**（must_defend U+0019）：`_tex_escape` 统一剥除。
+- **尾注/目录标题本地化**：`注释/目录` → zh=注释/目录、ja=注/目次、其他=
+  Notes/Contents（FG 英文书 '注释' 缺字形实测）。
+- **终验**：八核心书 xelatex 全 0 错（gaoshu 810/qft 456/FG 553/hanyu 437/
+  minfa 596/must_defend 277/izuno 227/born 213 页），缺字符个位~39；
+  jixie（901→页）见下。tests/test_stage3_export.py 新增 7 例。
+- **jixie 压测**（T7，498 页表格极限书）：VLM 498/498 页零失败，599 表
+  良构（14 列 GLL 规格表多层表头/φ 符号/下标全中），390 图归位（表内嵌
+  图 → 独立图块邻接表格，合乎设计），续表 145 处。QC 红 3：Yₓ 下标
+  unicode ↔ `$_{\mathrm{X}}$` 数学形态不归一（2 条，normalize 挂账）、
+  9.3 节标题 VLM 漏读（正文在，T11 交叉校验正主）；缺页 p16/p497 =
+  极淡分隔页/Anna's Archive 水印页（不优化/正确排除）。
+- **拆壳顺序事故**：`_TEXT_MATH_SHELL_RE` 首版在 unicode 映射前跑——℃ 被
+  映射成 `^\circ\mathrm{C}` 落进 	ext{} 壳内（机械手册 42 错尾巴）；改
+  为映射后再扫 + `_TEXT_NEST_RE` 塌缩 `	ext{	ext{X}}` 双壳。
+- **状态**：全部修复并验证——**九书 xelatex 全 0 错 0~39 缺字符**：
+  gaoshu 812 / qft 456 / FG 611 / hanyu 439 / minfa 596 / must_defend 277 /
+  izuno 227 / born 213 / **jixie 1411 页（0 错 0 缺字符，1411 页表格极限书）**。
+  产物已集于 output/v2-review（md/tex/pdf 三格式九本）。
