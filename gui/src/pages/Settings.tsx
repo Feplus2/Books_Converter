@@ -215,10 +215,20 @@ function ProviderDetail({
         apiKey: cfg.apiKey,
       });
       const existing = new Set(cfg.models.map((m) => m.id));
-      const fresh = ids.filter((i) => !existing.has(i));
-      fresh.forEach(addModel);
-      if (fresh.length) notify.success(S.settings.toastFetched(fresh.length));
-      else notify.info(S.settings.toastFetchedNone);
+      const fresh = ids.map((i) => i.trim()).filter((i) => i && !existing.has(i));
+      if (fresh.length) {
+        // 必须一次性批量写入：逐个 addModel/save 会基于渲染闭包里的旧 cfg
+        // 互相覆盖（实测拉 2 存 1——只有最后一个活下来）
+        const added = fresh.map((id) => ({
+          id,
+          vision: modelSupportsVision(presetId, id),
+          enabled: true,
+        }));
+        save({ models: [...cfg.models, ...added] });
+        notify.success(S.settings.toastFetched(fresh.length));
+      } else {
+        notify.info(S.settings.toastFetchedNone);
+      }
     } catch (e) {
       notify.error(S.settings.toastTestFail(String(e)));
     } finally {

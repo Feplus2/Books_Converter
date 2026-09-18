@@ -69,7 +69,11 @@
   表格专项审查（嵌图片单元格去向、多层表头、跨页合并触发率），
   产物进 dev 书库亲读。顺带覆盖 §T3③。
 - **T8. v2.0.0 打包发布（M4）**：version.py → 2.0.0、sidecar 重打
-  （books_converter_cli.exe 随 GUI）、MSI/zip、自动更新链。**用户发令才动**。
+  （books_converter_cli.exe 随 GUI）、自动更新链。**用户已拍板**：
+  ① 双轨发版——MSI 安装包（自动更新链）+ portable zip（解压即用）；
+  ② 设置随身——portable 模式把 gui_settings.json/_registry.jsonl 写到
+  exe 同级目录（U 盘换机可携）；③ 应用图标已换用户设计款
+  （gui/src-tauri/icons 已全量重生成）。仍等"验证完"发令。
 - **T9. MinerU 4.0 跟踪**：`MINERU_MODEL` 预留 tier 取值（flash/basic/
   standard/advanced）而非写死 vlm；盯云侧 tier 上线。
 
