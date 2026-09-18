@@ -98,9 +98,13 @@ class QueueStore {
     let defaultDir = "";
     for (const task of this.tasks) {
       if (task.status !== "queued") continue;
-      // ① 缺 key 预检：不启动该项 + 人话 toast 指明缺哪个 key + 去设置
+      // ① 缺 key 预检：卡片置错误态（不依赖一瞬即逝的 toast）+ 人话指明缺
+      // 哪个 key + 去设置；该项不再进 pump（旧版 continue 后 hasQueued 仍含
+      // 它，会被 pump 以无 key 状态照样起跑——"没反应"的直接来源）
       const check = precheckTask(task.options, settings);
       if (!check.ok) {
+        task.status = "error";
+        task.error = S.convert.toastMissingKey(check.missing);
         notify.error(S.convert.toastMissingKey(check.missing), {
           action: {
             label: S.convert.goSettings,
