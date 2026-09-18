@@ -309,6 +309,20 @@ class TestOrphanFootnotes(unittest.TestCase):
     <p class="footnote">² 无锚尾注内容。</p></aside>
     """
 
+    def test_split_chapter_images_up_one_level(self):
+        """分章 md：chapters/ 内图片链接 '../images/…'（index.md 在包级保持
+        'images/…'）——分章打开全部图片加载失败实测。"""
+        from stage3_export import export_markdown
+        unit = {"kind": "chapter", "title": "第一章 测试",
+                "parts": ['<img src="images/p0001_0.png" alt="图"/>'], "subs": []}
+        with tempfile.TemporaryDirectory() as td:
+            bundle = export_markdown([unit], Path(td), "t", "测试书", "",
+                                     split=True)[0]
+            ch = next((bundle / "chapters").glob("*.md")).read_text(encoding="utf-8")
+            self.assertIn("](../images/p0001_0.png)", ch)
+            idx = (bundle / "index.md").read_text(encoding="utf-8")
+            self.assertNotIn("](../images/", idx)
+
     def test_md_orphan(self):
         md = render_unit_md({"kind": "chapter", "title": "章", "parts": [self._HTML_ORPHAN]})
         self.assertNotIn("[^]:", md)

@@ -394,8 +394,11 @@ def _notes_label(lang: str) -> str:
     return _NOTES_LABEL.get(lang, "Notes")
 
 
-def render_unit_md(unit: dict, dialect: str = "gfm", lang: str = "zh") -> str:
-    """一个单元 → Markdown 文本。脚注定义收章末（[^N]: … 语法）。"""
+def render_unit_md(unit: dict, dialect: str = "gfm", lang: str = "zh",
+                   img_prefix: str = "") -> str:
+    """一个单元 → Markdown 文本。脚注定义收章末（[^N]: … 语法）。
+    img_prefix：分章形态下章节文件在 chapters/ 子目录，图片链接需 '../'
+    上溯到包级 images/（分章 md 全部图片加载失败实测）。"""
     from bs4 import BeautifulSoup
     out = []
     fndefs: list[tuple[str, str]] = []
@@ -437,7 +440,7 @@ def render_unit_md(unit: dict, dialect: str = "gfm", lang: str = "zh") -> str:
             out.append(f"\n$${latex}$$\n" if display else f"${latex}$")
         elif ev[0] == "img":
             src, alt = ev[1], ev[2]
-            out.append(f"\n![{alt}]({src})\n")
+            out.append(f"\n![{alt}]({img_prefix}{src})\n")
         elif ev[0] == "table":
             rows = ev[1]
             ncol = max(len(r) for r in rows)
@@ -647,7 +650,8 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
         index_lines = [front, f"\n## {_TOC_LABEL.get(lang, 'Contents')}\n"]
         idx = 0
         for u in units:
-            md = render_unit_md(u, dialect, lang)
+            # chapters/ 内的文件上溯一级取包级 images/（index.md 在包级不用）
+            md = render_unit_md(u, dialect, lang, img_prefix="../")
             fn = f"chapters/{_slug(u['title'], idx)}.md"
             (bundle / fn).write_text(md, encoding="utf-8")
             index_lines.append(f"- [{u['title']}]({fn})")

@@ -321,9 +321,14 @@ class QueueStore {
     this.listeners.add(l);
     return () => this.listeners.delete(l);
   };
-  getTasks = () => this.tasks;
+  // useSyncExternalStore 按 Object.is 比较快照：数组原地 push/改字段引用不变，
+  // emit 了 React 也不重渲染（"点了开始没反应"根因）——快照必须在 emit 时
+  // 换新引用，且不能在 getSnapshot 里现切（每次调用新引用 = 渲染死循环）
+  private snapshot: QueueTask[] = [];
+  getTasks = () => this.snapshot;
   getStarted = () => this.started;
   private emit() {
+    this.snapshot = this.tasks.slice();
     this.listeners.forEach((l) => l());
   }
 }
