@@ -5,6 +5,7 @@ Stage 1: MinerU API — PDF → 结构化 Markdown + JSON + 图片
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -94,6 +95,10 @@ def _split_pdf_chunks(pdf_path: Path, tmp_dir: Path,
             return [(pdf_path, 0, total - 1)]
         tmp_dir.mkdir(parents=True, exist_ok=True)
         chunks: list[tuple[Path, int, int]] = []
+        # 文件名带进程号：同工作目录并发跑同一本书时，残留/锁定中的旧切片
+        # 不会挡住本次保存（Windows 上 save 覆盖被锁文件 = 'cannot remove
+        # file' 直接炸 Stage 1——izuno 双管线互踩实测）
+        run_tag = f"{os.getpid():x}"
 
         def carve(start: int, end: int) -> None:
             n = end - start + 1
@@ -102,7 +107,7 @@ def _split_pdf_chunks(pdf_path: Path, tmp_dir: Path,
                 carve(start, mid)
                 carve(mid + 1, end)
                 return
-            path = tmp_dir / f"_chunk_{len(chunks):03d}_{start + 1}-{end + 1}.pdf"
+            path = tmp_dir / f"_chunk_{run_tag}_{len(chunks):03d}_{start + 1}-{end + 1}.pdf"
             sz = _write_chunk(doc, start, end, path)
             if sz <= max_bytes:
                 chunks.append((path, start, end))
@@ -318,7 +323,7 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
         chunks_dir = mineru_out / "_chunks"
         if chunks_dir.is_dir():
             try:
-                for leftover in chunks_dir.glob("_chunk_*.pdf"):
+                for leftover in chunks_dir.glob(f"_chunk_{run_tag}_*.pdf"):
                     leftover.unlink()
                 chunks_dir.rmdir()
             except OSError:
