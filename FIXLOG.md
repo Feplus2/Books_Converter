@@ -1489,3 +1489,17 @@
   孤儿罚语义（豁免锚点救援块）或 VLM 目录页条目补收——均属既有语义
   改动，按 AGENTS.md 留待用户裁定。QC 现 42/43，空章 1（已知 cosmetic）。
 - **状态**：Fifty Ways 已修复并验证；III. 挂账（根因链存档）。
+
+### 病例 046 再续｜FG 50 分钟"假卡死"——轮询超时无降级
+
+- **现象**：FG 规则版跑了 50+ 分钟看似卡死（对半拆分日志停在 16:23）。
+- **根因链**：MinerU 云端当日严重退化（新 token 上午顺、下午龟速）→
+  大片必败（state=failed 密度型）+ 小片排队 4-5 分钟 → SDK 轮询
+  TimeoutError 走"异常 3 次睡重试"路径（900s×3≈45 分钟无输出假象）→
+  仍败则整书终止。同一任务直查云端 API：state=running 且持续推进
+  （36/50 → done），证明非我方 bug 亦非限额。
+- **修补**：`_extract_once` 对 TimeoutError 不睡重试、立刻上抛
+  `_CloudTimeout`；`_extract_chunk` 将超时与 state=failed 同路径对半
+  递归/单页跳过。tests/test_stage1_mineru_split_fail.py 加超时降级用例
+  （递归树先序调用序列 [30,15,8,7,15,8,7] 证明零重试）。
+- **状态**：已修复并验证（测试层）；FG 重跑在剩余五书批量里。
