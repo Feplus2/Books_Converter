@@ -114,6 +114,32 @@ class SplitFailDegradeTest(unittest.TestCase):
             self.assertEqual(sorted(b["page_idx"] for b in info["content_list"]),
                              list(range(25)))
 
+    def test_poll_timeout_also_splits(self):
+        """云端轮询超时（任务龟速）同样对半降级且不睡重试——FG 50 分钟
+        假象卡死实测：超时走异常重试路径会 900s×3 后才整书终止。"""
+        with tempfile.TemporaryDirectory() as td:
+            pdf = Path(td) / "book.pdf"
+            _make_pdf(pdf, 30)
+
+            class _SlowCloud(_FakeMinerU):
+                def extract(self, path, **kw):
+                    doc = fitz.open(path)
+                    n = doc.page_count
+                    doc.close()
+                    self.calls.append(n)
+                    if n > 10:
+                        raise TimeoutError("Task xxx did not complete within 900s")
+                    return _FakeResult("done", n)
+
+            fake = _SlowCloud("t")
+            with mock.patch.object(stage1_mineru, "MinerU", lambda _t: fake):
+                info = stage1_mineru.run_mineru(str(pdf), td)
+            self.assertEqual(sorted(b["page_idx"] for b in info["content_list"]),
+                             list(range(30)))
+            self.assertEqual(info["failed_pages"], [])
+            # 超时片每节点只提交一次（不睡重试）：调用序列=递归树先序遍历
+            self.assertEqual(fake.calls, [30, 15, 8, 7, 15, 8, 7])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

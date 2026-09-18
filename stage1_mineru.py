@@ -22,6 +22,10 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+
+class _CloudTimeout(Exception):
+    """云端轮询超时（任务排队/龟速）——与网络抖动区分：上层对半拆，不睡重试。"""
+
 # 双天花板（云端硬限制：单文件 ≤200MB 且 ≤600 页，SDK FileTooLargeError/
 # PageLimitError 实证）。字节取 200MB 的 75 折留余量；页数 200 为免费档建议值。
 CHUNK_MAX_PAGES = 200
@@ -158,7 +162,9 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
     client = MinerU(MINERU_TOKEN)
 
     def _extract_once(path: Path):
-        """网络层重试 3 次（间歇性 SSL/CDN）；仍败抛 RuntimeError。"""
+        """网络层重试 3 次（间歇性 SSL/CDN）；仍败抛 RuntimeError。
+        云端轮询超时（任务排队/龟速，FG 实测 50 分钟假象卡死）立刻上抛
+        _CloudTimeout——睡重试只会再排一次长队，交上层对半拆才是正解。"""
         last_error = None
         for attempt in range(3):
             try:
@@ -172,6 +178,8 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
                     timeout=MINERU_TIMEOUT,
                 )
             except Exception as e:
+                if type(e).__name__ == "TimeoutError":
+                    raise _CloudTimeout(str(e)) from e
                 last_error = e
                 if attempt < 2:
                     wait = (attempt + 1) * 10
@@ -182,21 +190,26 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
     def _extract_chunk(chunk_path: Path, start0: int, end0: int,
                        tag: str) -> list[tuple]:
         """单片解析。云端 state=failed（解析失败——密度/坏页压垮 worker，
-        机械手册实测 200 页/34MB 与 20 页密扫皆败、10 页即过）时对半递归；
-        单页仍败 → 记入 failed_pages 跳过（缺口优于陪葬全书）。
+        机械手册实测 200 页/34MB 与 20 页密扫皆败、10 页即过）或轮询超时
+        时对半递归；单页仍败 → 记入 failed_pages 跳过（缺口优于陪葬全书）。
         返回 [(result, sub_start0), ...]（保序）。"""
-        result = _extract_once(chunk_path)
-        if result.state == "done":
+        try:
+            result = _extract_once(chunk_path)
+        except _CloudTimeout:
+            result = None
+        if result is not None and result.state == "done":
             return [(result, start0)]
         if start0 == end0:
-            logger.error(f"    第 {start0 + 1} 页云端解析失败（{result.state}），"
+            why = "解析失败" if result is not None else "轮询超时"
+            logger.error(f"    第 {start0 + 1} 页云端{why}，"
                          f"跳过该页（内容缺口，QC 缺页检查会报）")
             failed_pages.append(start0)
             return []
         mid = start0 + (end0 - start0) // 2
-        logger.warning(f"    {tag}（第 {start0 + 1}-{end0 + 1} 页）云端解析失败，"
+        why = "云端解析失败" if result is not None else "云端轮询超时"
+        logger.warning(f"    {tag}（第 {start0 + 1}-{end0 + 1} 页）{why}，"
                        f"对半拆为 {start0 + 1}-{mid + 1} / {mid + 2}-{end0 + 1} 重试")
-        _report(f"{tag}: 云端解析失败，对半拆分重试…", None)
+        _report(f"{tag}: {why}，对半拆分重试…", None)
         doc = fitz.open(str(chunk_path))
         out: list[tuple] = []
         try:
