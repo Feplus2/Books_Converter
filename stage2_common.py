@@ -454,6 +454,17 @@ def _parse_toc_array(data) -> list:
 _SUP_MARK_RE = re.compile(r"\$\^\{[^{}]*\}\$")
 _DECOR_PREFIX_RE = re.compile(r"^[—–-]\s*[IVXLCDM]+\.?\s*[—–-]\s*", re.I)
 
+# unicode 上下标 → ASCII（标题匹配用归一，不动原文）：'Yₓ'/'Y_{X}'/'Yx' 归一
+_UNICODE_SUB_SUPER_MAP = str.maketrans({
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5",
+    "₆": "6", "₇": "7", "₈": "8", "₉": "9", "₊": "+", "₋": "-",
+    "₌": "=", "₍": "(", "₎": ")", "ₐ": "a", "ₑ": "e", "ₒ": "o",
+    "ₓ": "x", "ₔ": "e", "ₕ": "h", "ₖ": "k", "ₗ": "l", "ₘ": "m",
+    "ₙ": "n", "ₚ": "p", "ₛ": "s", "ₜ": "t",
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+    "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "ⁿ": "n", "ⁱ": "i",
+})
+
 # LaTeX 命令 → Unicode（病例 024，锚点归一化用；长的在前防前缀截胡）
 _LATEX_SYMBOL_MAP = (
     ("\\longrightarrow", "→"), ("\\rightarrow", "→"), ("\\leftarrow", "←"),
@@ -484,6 +495,11 @@ def _normalize_title(text: str) -> str:
     # 混进标题——'第二章 土耳其<sub>：</sub>地缘…' vs 目录 '第二章 土耳其：地缘…'）
     t = re.sub(r"<[^>]+>", "", t)
     t = t.replace("$", "")
+    # \mathrm/\mathbf 等格式包装只留内容（'Y_{\mathrm{X}}' ↔ 'Yₓ'，机械手册
+    # 目录锚点落空实测；必须在通用命令剥除之前，否则剩 'mathrmX' 垃圾字母）
+    t = re.sub(r"\\math[a-z]+\{([^{}]*)\}", r"\1", t)
+    # unicode 上下标字符 → ASCII（目录侧 'Yₓ' ↔ 正文侧 'Yx'/'Y_{X}' 三形态归一）
+    t = t.translate(_UNICODE_SUB_SUPER_MAP)
     # LaTeX 格式命令是纯排版噪声（目录与正文常不一致）
     t = t.replace("\\left", "").replace("\\right", "")
     for cmd, uni in _LATEX_SYMBOL_MAP:

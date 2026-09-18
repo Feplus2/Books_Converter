@@ -82,6 +82,11 @@ def test_normalize_strips_footnote_mark_and_decor():
     # 全半角括号统一（病例 037）：目录半角（义位系统） ↔ 正文全角（义位系统）
     assert nt("第七章 语义场（义位系统）（下）") == nt("第七章 语义场(义位系统)(下)")
     assert nt("第七章\u3000语义场（义位系统）（下）") == nt("第七章 语义场(义位系统)(下)")
+    # unicode 下标 ↔ 数学形态下标 ↔ 平写 三形态归一（病例 046，机械手册
+    # '15 Yₓ 形密封圈' 目录锚点落空实测）：\mathrm 包装只留内容
+    assert nt("15.1 孔用 Yₓ 形密封圈") == nt(r"15.1 孔用 Y$_{\mathrm{X}}$ 形密封圈")
+    assert nt("15 Yₓ 形密封圈") == nt("15 Yx 形密封圈")
+    assert nt("₆₀ 下标数字") == nt("60 下标数字")
 
 
 def test_anchor_math_delimiters_and_quotes():

@@ -1436,3 +1436,29 @@
   gaoshu 812 / qft 456 / FG 611 / hanyu 439 / minfa 596 / must_defend 277 /
   izuno 227 / born 213 / **jixie 1411 页（0 错 0 缺字符，1411 页表格极限书）**。
   产物已集于 output/v2-review（md/tex/pdf 三格式九本）。
+
+## 病例 046｜MinerU 云端解析失败对半降级 + Yₓ 下标归一 — 1.3.9 用户报告根因
+
+- **现象（用户报告，1.3.9 旧发行版）**：转换中途偶发"解析失败：片 N"；
+  Born a Crime 片 1 即败；机械手册（78MB/498 页，未及限额）同样翻车。
+- **根因链（两条独立）**：
+  1. Born 片 1 即败 = **旧发行版存的是过期 JWT**（与现行代码 401 同款；
+     现行代码 + 新 token 复测 Born 全通、QC 全绿）——非管线缺陷。
+  2. 机械手册 = **MinerU 云端解析侧失败**（`state=failed` + 'parsing failed,
+     please try again later'）：与大小/页数限额无关，是密度压垮 worker——
+     实测 200 页/34MB 片败、20 页密扫片败、10 页即过（文字版 Born 200 页
+     密排文本反而全过）。旧版无降级，一片失败即整书终止。
+- **修补**（stage1_mineru.py）：`_extract_chunk` 云端解析失败时对半递归
+  （200→100→50→25→…），单页仍败记入 `failed_pages` 跳过并在日志/返回值
+  明示（缺口优于陪葬全书）；网络异常维持重试 3 次后抛（带页码区间）。
+- **Yₓ 下标归一**（jixie QC 红 3→1）：`_normalize_title` 新增
+  `\math[a-z]+{…}` 包装剥除（先于通用命令剥除，否则剩 'mathrmX' 垃圾字母）
+  + unicode 上下标字符 → ASCII 映射表（'Yₓ'/'Yx'/'Y$_{\mathrm{X}}$' 三形态
+  归一）；jixie VLM stage2 重跑后 15/15.1 两条锚上。余 '9.3 矩形螺纹的螺旋
+  密封计算' = VLM 漏读该节标题（正文在）——T11 交叉校验的正主证据，挂账。
+- **T5 核销**：现构建 nav fragment 链接 243 个 0 断链（qft/gaoshu/FG），
+  SageRead 清单 #6 的旧构建问题已不存在。
+- **回归**：tests/test_stage1_mineru_split_fail.py（对半递归全恢复 + 单页
+  隔离，fake client 模拟云端失败）；tests/test_stage2_toc.py 下标归一 3 断言；
+  全测试链绿；jixie MinerU 实跑见拆分收敛日志（病例登记时仍在跑）。
+- **状态**：已修复并验证（9.3 挂账转 T11）。

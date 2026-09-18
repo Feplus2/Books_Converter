@@ -51,6 +51,8 @@
   width/height 属性（SageRead 滚动位置追踪根治的源头）。
 - **T5. TOC href 与 spine 拆分对齐**：拆 spine 时 fragment id 必须在
   拆分后文件里真实存在，或每拆分文件配无 fragment 的 TOC 项。
+  ✅ 2026-09-18 验证：现构建 qft/gaoshu/FG 共 243 个 fragment 链接 0 断链，
+  旧构建的问题已不存在（无需修）。
 - **T6. 200MB+ 双天花板切片上传**：云端硬限制=单文件 ≤200MB 且 ≤600 页
   （SDK FileTooLargeError/PageLimitError 实证）。当前假分片（按 200 页分但
   每片重传整份文件）。修法：fitz 物理切片——顺序累积页，页数将达 200 或

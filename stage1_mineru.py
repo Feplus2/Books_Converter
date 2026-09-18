@@ -152,14 +152,71 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
 
     all_markdown = []
     all_blocks = []
-    page_offset = 0
+    failed_pages: list[int] = []
     _report = progress or (lambda *a, **kw: None)
 
     client = MinerU(MINERU_TOKEN)
+
+    def _extract_once(path: Path):
+        """网络层重试 3 次（间歇性 SSL/CDN）；仍败抛 RuntimeError。"""
+        last_error = None
+        for attempt in range(3):
+            try:
+                return client.extract(
+                    str(path),
+                    model=MINERU_MODEL,
+                    ocr=ocr,
+                    formula=MINERU_ENABLE_FORMULA,
+                    table=MINERU_ENABLE_TABLE,
+                    language=MINERU_LANGUAGE,
+                    timeout=MINERU_TIMEOUT,
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    wait = (attempt + 1) * 10
+                    logger.warning(f"    尝试 {attempt + 1} 失败，{wait}s 后重试: {e}")
+                    time.sleep(wait)
+        raise RuntimeError(f"重试 3 次仍失败: {last_error}")
+
+    def _extract_chunk(chunk_path: Path, start0: int, end0: int,
+                       tag: str) -> list[tuple]:
+        """单片解析。云端 state=failed（解析失败——密度/坏页压垮 worker，
+        机械手册实测 200 页/34MB 与 20 页密扫皆败、10 页即过）时对半递归；
+        单页仍败 → 记入 failed_pages 跳过（缺口优于陪葬全书）。
+        返回 [(result, sub_start0), ...]（保序）。"""
+        result = _extract_once(chunk_path)
+        if result.state == "done":
+            return [(result, start0)]
+        if start0 == end0:
+            logger.error(f"    第 {start0 + 1} 页云端解析失败（{result.state}），"
+                         f"跳过该页（内容缺口，QC 缺页检查会报）")
+            failed_pages.append(start0)
+            return []
+        mid = start0 + (end0 - start0) // 2
+        logger.warning(f"    {tag}（第 {start0 + 1}-{end0 + 1} 页）云端解析失败，"
+                       f"对半拆为 {start0 + 1}-{mid + 1} / {mid + 2}-{end0 + 1} 重试")
+        _report(f"{tag}: 云端解析失败，对半拆分重试…", None)
+        doc = fitz.open(str(chunk_path))
+        out: list[tuple] = []
+        try:
+            for lo, hi, suffix in ((start0, mid, "a"), (mid + 1, end0, "b")):
+                sub_path = chunk_path.with_name(
+                    f"{chunk_path.stem}_{suffix}{lo + 1}-{hi + 1}.pdf")
+                # chunk 文件内页码是 0 基相对的：lo/hi 映射回文件内区间
+                _write_chunk(doc, lo - start0, hi - start0, sub_path)
+                out.extend(_extract_chunk(sub_path, lo, hi, tag + suffix))
+                try:
+                    sub_path.unlink()
+                except OSError:
+                    pass
+        finally:
+            doc.close()
+        return out
+
     try:
         for chunk_idx, (chunk_path, start0, end0) in enumerate(chunks):
             start_page, end_page = start0 + 1, end0 + 1  # 1-based 展示
-            n_pages = end0 - start0 + 1
 
             _report(f"片 {chunk_idx + 1}/{chunks_needed}: 第 {start_page}-{end_page} 页 正在上传...",
                     chunk_idx / chunks_needed)
@@ -167,59 +224,34 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
                         f"第 {start_page}-{end_page} 页 ...")
             t0 = time.time()
 
-            # 重试逻辑：处理间歇性 SSL/CDN 错误
-            result = None
-            last_error = None
-            for attempt in range(3):
-                try:
-                    if attempt > 0:
-                        _report(f"片 {chunk_idx + 1}/{chunks_needed}: 重试 {attempt + 1}/3...")
-                    # 物理切片后废弃 pages 参数：逐 chunk 全量解析
-                    result = client.extract(
-                        str(chunk_path),
-                        model=MINERU_MODEL,
-                        ocr=ocr,
-                        formula=MINERU_ENABLE_FORMULA,
-                        table=MINERU_ENABLE_TABLE,
-                        language=MINERU_LANGUAGE,
-                        timeout=MINERU_TIMEOUT,
-                    )
-                    break
-                except Exception as e:
-                    last_error = e
-                    if attempt < 2:
-                        wait = (attempt + 1) * 10
-                        logger.warning(f"    尝试 {attempt + 1} 失败，{wait}s 后重试: {e}")
-                        time.sleep(wait)
-            if result is None:
-                raise RuntimeError(
-                    f"MinerU 片 {chunk_idx + 1}/{chunks_needed} "
-                    f"（第 {start_page}-{end_page} 页）重试 3 次仍失败: {last_error}")
+            results = _extract_chunk(chunk_path, start0, end0,
+                                     f"片 {chunk_idx + 1}/{chunks_needed}")
 
             elapsed = time.time() - t0
-            if result.state != "done":
-                raise RuntimeError(f"片 {chunk_idx + 1} 失败: state={result.state}")
+            n_md = n_blk = n_img = 0
+            for result, sub_start0 in results:
+                md_chunk = result.markdown or ""
+                blocks_chunk = result.content_list or []
 
-            md_chunk = result.markdown or ""
-            blocks_chunk = result.content_list or []
+                # 调整 page_idx: MinerU 从 0 开始且相对当前（子）片
+                for block in blocks_chunk:
+                    if "page_idx" in block:
+                        block["page_idx"] = block["page_idx"] + sub_start0
 
-            # 调整 page_idx: MinerU 的 page_idx 从 0 开始且相对当前 chunk
-            for block in blocks_chunk:
-                if "page_idx" in block:
-                    block["page_idx"] = block["page_idx"] + page_offset
+                all_markdown.append(md_chunk)
+                all_blocks.extend(blocks_chunk)
+                n_md += len(md_chunk)
+                n_blk += len(blocks_chunk)
 
-            all_markdown.append(md_chunk)
-            all_blocks.extend(blocks_chunk)
-            page_offset += n_pages
-
-            # 保存图片到磁盘（MinerU SDK 以 bytes 形式返回）
-            if result.images:
-                images_out = mineru_out / "images"
-                images_out.mkdir(parents=True, exist_ok=True)
-                for img in result.images:
-                    img_file = images_out / img.name
-                    with open(img_file, "wb") as f:
-                        f.write(img.data)
+                # 保存图片到磁盘（MinerU SDK 以 bytes 形式返回）
+                if result.images:
+                    images_out = mineru_out / "images"
+                    images_out.mkdir(parents=True, exist_ok=True)
+                    for img in result.images:
+                        img_file = images_out / img.name
+                        with open(img_file, "wb") as f:
+                            f.write(img.data)
+                        n_img += 1
 
             # chunk 临时文件随用随清（大书切片体积可观）
             if chunk_path != pdf_path:
@@ -229,11 +261,10 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
                     pass
 
             _report(f"片 {chunk_idx + 1}/{chunks_needed}: 完成 — "
-                    f"{len(md_chunk):,} 字符, {len(result.images)} 张图片",
+                    f"{n_md:,} 字符, {n_img} 张图片",
                     (chunk_idx + 1) / chunks_needed)
-            logger.info(f"    完成: {len(md_chunk):,} 字符, "
-                        f"{len(blocks_chunk)} blocks, "
-                        f"{len(result.images)} 张图片, 耗时 {elapsed:.0f}s")
+            logger.info(f"    完成: {n_md:,} 字符, {n_blk} blocks, "
+                        f"{n_img} 张图片, 耗时 {elapsed:.0f}s")
 
         # 合并 markdown
         merged_md = "\n\n".join(all_markdown)
@@ -247,8 +278,20 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
         with open(cl_path, "w", encoding="utf-8") as f:
             json.dump(all_blocks, f, ensure_ascii=False, indent=2)
 
+        if failed_pages:
+            logger.warning(f"  {len(failed_pages)} 页云端解析失败已跳过: "
+                           f"{[p + 1 for p in failed_pages][:20]}"
+                           f"{' …' if len(failed_pages) > 20 else ''}")
+
         logger.info(f"  合并完成: {len(merged_md):,} 字符 markdown, "
                     f"{len(all_blocks)} 个内容块")
+
+        return {
+            "markdown": merged_md,
+            "content_list": all_blocks,
+            "images_dir": str(mineru_out / "images"),
+            "failed_pages": failed_pages,
+        }
 
         return {
             "markdown": merged_md,
