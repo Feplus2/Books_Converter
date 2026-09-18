@@ -521,6 +521,13 @@ def _normalize_title(text: str) -> str:
     # 四个章因此锚不上；(?=\D) 防误伤小数形 '3.14'）
     t = re.sub(r"^(\d{1,3})[.、．](?=\D)", r"\1", t)
     t = re.sub(r"^([IVXLC]+)[.、．](?=\D)", r"\1", t)
+    # 尾随星号（脚注标记）剥除（FG '…Therapists*' 实测）；分隔符（冒号/破折号）
+    # 归一为无（目录 'Thinking — Basic' ↔ 正文 'Thinking: Basic' 失配实测，
+    # 只影响匹配键不动原文）
+    t = re.sub(r"[\s*]+$", "", t)
+    # 分隔符归一为 '-'（目录 'Thinking — Basic' ↔ 正文 'Thinking: Basic'
+    # 失配实测，FG）：冒号/破折号各类统一；只影响匹配键不动原文
+    t = re.sub(r"[:：—–-]", "-", t)
     return re.sub(r"[\s　]+", "", t).strip().casefold()
 
 
@@ -757,10 +764,11 @@ def _match_anchor(text: str, anchors: list):
             if long_prefix_best is None or len(k) > len(long_prefix_best[0]):
                 long_prefix_best = (k, a)
         elif len(k) >= 8 and key.endswith(k) and len(key) > len(k) \
-                and key[: len(key) - len(k)].endswith((":", "：")):
-            # 锚点是块的尾部，块多一个冒号标签前缀（'Complement: Isospin
-            # and flavor SU(3)' ↔ 目录 'Isospin and flavor SU(3)'，病例 024）；
-            # 冒号限定防过匹配（裸后缀会把 '绪论' 错配到 '附录：绪论'），取最长
+                and key[: len(key) - len(k)].endswith("-"):
+            # 锚点是块的尾部，块多一个标签前缀（'Complement: Isospin and
+            # flavor SU(3)' ↔ 目录 'Isospin and flavor SU(3)'，病例 024）；
+            # 分隔符已归一为 '-'（冒号/破折号同类）；分隔限定防过匹配
+            # （裸后缀会把 '绪论' 错配到 '附录：绪论'），取最长
             if long_suffix_best is None or len(k) > len(long_suffix_best[0]):
                 long_suffix_best = (k, a)
     if prefix_best is not None:
@@ -908,10 +916,14 @@ def _calibrate_levels(blocks: list, toc_entries: list,
             continue
         text = (b.get("content") or "").strip()
         key = _normalize_title(text)
-        # 长度上限只挡非标题块：引擎已标 title 的块有视觉证据（闸门同理不套
-        # 位置约束）——多行 ALL-CAPS 超长章题（BAC ch12，归一化 105 字符）
-        # 曾被 64 上限漏过，锚点在手也拿不到 level
-        if not key or (len(key) > 64 and b.get("type") != "title"):
+        if not key:
+            continue
+        # 长度上限只挡非标题块的模糊命中：引擎已标 title 的块有视觉证据；
+        # 全键精确命中同样是极强证据（71 字符随机碰撞不可能）——FG 'III.
+        # The Spiritual/…'（71 字符编分隔页被模型判成正文）实测。模糊/前缀
+        # 命中仍受 64 上限（CliffsNotes 摘要表案由位置闸门兜底，不受影响）。
+        exact = any(a[0] == key for a in anchors)
+        if len(key) > 64 and b.get("type") != "title" and not exact:
             continue
         m = _match_anchor(text, anchors)
         if m is None:

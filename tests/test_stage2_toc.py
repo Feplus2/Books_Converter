@@ -443,6 +443,33 @@ def _title(content, page, level=1, id_=0):
             "bbox": [0.3, 0.2, 0.7, 0.25]}
 
 
+def test_rescue_long_exact_match_bypasses_cap():
+    """>64 字符非标题块：全键精确命中豁免长度帽晋升（FG 'III. The
+    Spiritual/…' 编分隔页实测）；单字差模糊命中仍受帽（不动作）。
+    家族健康前提：I./II. 已是标题（孤儿罚只打全书无 1 的家族）。"""
+    from stage2_common import _calibrate_levels
+    long_title = ("III. The Spiritual/Philosophical Dimension: "
+                  "The Four Great Deaths of the Self")
+    assert len(long_title) > 64
+    toc = [{"text": "I. Part One", "level": 1, "page": 10},
+           {"text": "II. Part Two", "level": 1, "page": 60},
+           {"text": long_title, "level": 1, "page": None}]
+    blocks = [
+        _title("I. Part One", 12, level=1, id_=10),
+        _title("II. Part Two", 61, level=1, id_=11),
+        {"type": "text", "content": long_title, "page": 377, "level": -1,
+         "id": 1, "contd": -1, "image": -1, "bbox": [0.3, 0.2, 0.7, 0.25]},
+        # 同长但错一个字符（模糊命中）：仍受 64 帽拦截
+        {"type": "text", "content": long_title.replace("Deaths", "Deatbs"),
+         "page": 378, "level": -1, "id": 2, "contd": -1, "image": -1,
+         "bbox": [0.3, 0.2, 0.7, 0.25]},
+    ]
+    _calibrate_levels(blocks, toc)
+    by_id = {b["id"]: b for b in blocks}
+    assert by_id[1]["type"] == "title" and by_id[1]["level"] == 1
+    assert by_id[2]["type"] == "text" and by_id[2]["level"] == -1
+
+
 def test_rescue_aborts_on_scattered_offsets():
     """《必须保卫社会》案例：真标题全锚上但目录页码是瞎编的（偏移票
     互不相同）→ 必须放弃救援，一个块都不许合成。"""
