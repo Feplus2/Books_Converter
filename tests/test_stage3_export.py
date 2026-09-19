@@ -74,6 +74,33 @@ class TestTex(unittest.TestCase):
             self.assertIn("ctexbook", full.read_text(encoding="utf-8"))
             self.assertNotIn("\\documentclass", frag.read_text(encoding="utf-8"))
 
+    def test_full_first_line_xelatex_magic(self):
+        """病例 056 防呆：完整文档首行 = xelatex magic comment
+        （TeXworks/TeXShop/LaTeX-Workshop 据此自动选 xelatex，
+        防 pdflatex 误编译中文文档）。"""
+        with tempfile.TemporaryDirectory() as td:
+            for lang in ("zh", "en", "ja"):
+                p = export_tex([_unit()], Path(td), f"t-{lang}", "测试书", "",
+                               full=True, lang=lang)[0]
+                first = p.read_text(encoding="utf-8").splitlines()[0]
+                self.assertEqual(first, "% !TeX program = xelatex")
+
+    def test_fragment_header_warns_not_compilable(self):
+        """病例 056 防呆：片段首行起为注释警告块（不能直接编译、\\input
+        用法、开启「完整 TeX 文档」指引），且正文内容不受注释影响。"""
+        with tempfile.TemporaryDirectory() as td:
+            p = export_tex([_unit()], Path(td), "t", "测试书", "",
+                           full=False, lang="zh")[0]
+            txt = p.read_text(encoding="utf-8")
+            lines = txt.splitlines()
+            self.assertTrue(lines[0].startswith("%"))
+            self.assertIn("不能直接编译", txt)
+            self.assertIn("\\input", txt)
+            self.assertIn("完整 TeX 文档", txt)
+            # 注释不影响既有内容（正文断言与整文档形态一致）
+            self.assertIn("\\chapter*{第一章 测试}", txt)
+            self.assertNotIn("\\documentclass", txt)
+
     def test_booktabs_rule_relax(self):
         """booktabs 规则后 \\relax：首列以 '(' 起头的行不被吞成 trim 参数
         （FG '(Sad) blue…' 单元格 207 个 Undefined control sequence 实测）。"""
@@ -81,6 +108,23 @@ class TestTex(unittest.TestCase):
         self.assertIn("\\toprule\\relax", tex)
         self.assertIn("\\midrule\\relax", tex)
         self.assertNotIn("\rel", tex.replace("\\relax", ""))  # 防 \r 回车逃逸
+
+    def test_empty_body_table_midrule_no_relax(self):
+        """病例 056 编译验证实测：单行表（仅表头无数据行）\midrule\relax
+        紧跟 \bottomrule 断 \noalign 连锁（Misplaced \noalign）→ 空表体
+        省略 \\relax；有数据行时保留（FG '(' 防护不回归）。"""
+        one_row = {"kind": "chapter", "title": "章",
+                   "parts": ["<table><thead><tr><th>甲</th><th>乙</th></tr></thead>"
+                             "<tbody></tbody></table>"], "subs": []}
+        tex1 = render_unit_tex(one_row)
+        self.assertIn("\\midrule\n", tex1)          # 空表体：无 \relax
+        self.assertNotIn("\\midrule\\relax", tex1)
+        two_row = {"kind": "chapter", "title": "章",
+                   "parts": ["<table><thead><tr><th>甲</th><th>乙</th></tr></thead>"
+                             "<tbody><tr><td>(Sad) blue</td><td>x</td></tr>"
+                             "</tbody></table>"], "subs": []}
+        tex2 = render_unit_tex(two_row)
+        self.assertIn("\\midrule\\relax", tex2)     # 有数据行：\relax 保留
 
     def test_preamble_lang_selection(self):
         """ja → xeCJK+日文字体（izuno lmroman 缺字 xelatex 段错误实测）；
@@ -298,6 +342,28 @@ class TestExportBookLang(unittest.TestCase):
         r = export_book(td, {"md", "tex"}, export_lang="auto")
         self.assertIn("正文。", r["md"][0].read_text(encoding="utf-8"))
         self.assertTrue(r["tex"][0].read_text(encoding="utf-8").startswith("% !TeX"))
+
+    def test_empty_engine_dir_skipped(self):
+        """病例 054：structure.engine=hybrid（非缓存目录名），工作目录残留
+        只有 vlm_state.db 的空壳 vlm/ → 必须跳过，继续找有缓存的 mineru/；
+        否则空 content_list 让 body_range 塌空，md/tex 只剩前后页（秦汉史实测）。"""
+        td = Path(tempfile.mkdtemp())
+        (td / "structure.json").write_text(json.dumps({
+            "engine": "hybrid", "metadata": {"title": "测试书", "language": "zh"},
+            "toc_entries": [], "front_matter": [], "back_matter": [],
+            "popo_blocks_file": "popo_blocks.json"}), encoding="utf-8")
+        (td / "popo_blocks.json").write_text(json.dumps([
+            {"id": 0, "type": "title", "content": "第一章 测试", "level": 1, "page": 1, "source_id": "t:0"},
+            {"id": 1, "type": "text", "content": "正文。", "page": 1, "source_id": "t:1"},
+        ], ensure_ascii=False), encoding="utf-8")
+        # 空壳 vlm/（只有 state db，无缓存）+ 真缓存 mineru/
+        (td / "vlm").mkdir()
+        (td / "vlm" / "vlm_state.db").write_bytes(b"sqlite")
+        (td / "mineru").mkdir()
+        (td / "mineru" / "x_content_list.json").write_text(json.dumps([
+            {"type": "text", "text": "x", "bbox": [0, 0, 1, 1], "page_idx": 0}]), encoding="utf-8")
+        units = build_units(td, use_translations=False)
+        self.assertIn("第一章 测试", [u["title"] for u in units])
 
 
 class TestOrphanFootnotes(unittest.TestCase):

@@ -463,6 +463,12 @@ def _play_done_sound():
     play_completion_sound()
 
 
+def _play_fail_sound():
+    """失败提示音（异步 WAV；CONVERT_FAIL_SOUND=off 可关），镜像完成音"""
+    from completion_sound import play_failure_sound
+    play_failure_sound()
+
+
 # ════════════════════════════════════════════════════════════
 # 鎏金胶囊开关（自绘 toggle，替代复古 Checkbutton）
 # ════════════════════════════════════════════════════════════
@@ -1714,6 +1720,7 @@ class App:
                     text=_fmt_elapsed(time.time() - book["t0"]))
             self._set_detail(f"《{book['name']}》{reason}", _RED)
             self._active_stage = 0
+            threading.Thread(target=_play_fail_sound, daemon=True).start()
 
         elif cmd == "queue_done":
             _, cancelled, n_done = msg
@@ -1733,6 +1740,7 @@ class App:
             self._restore_idle_controls()
             self._set_detail(msg[1], _RED)
             self._run_hint.config(text=self._t("hint_error"))
+            threading.Thread(target=_play_fail_sound, daemon=True).start()
 
         elif cmd == "models_ok":
             _, ids = msg

@@ -80,7 +80,8 @@ def _downsample_single_page(doc: fitz.Document, pno: int, out_path: Path,
 
 def _split_pdf_chunks(pdf_path: Path, tmp_dir: Path,
                       max_pages: int = CHUNK_MAX_PAGES,
-                      max_bytes: int = CHUNK_MAX_BYTES
+                      max_bytes: int = CHUNK_MAX_BYTES,
+                      run_tag: str | None = None
                       ) -> list[tuple[Path, int, int]]:
     """物理切片：页数将达 max_pages 或片字节将达 max_bytes 即切一刀。
 
@@ -97,8 +98,11 @@ def _split_pdf_chunks(pdf_path: Path, tmp_dir: Path,
         chunks: list[tuple[Path, int, int]] = []
         # 文件名带进程号：同工作目录并发跑同一本书时，残留/锁定中的旧切片
         # 不会挡住本次保存（Windows 上 save 覆盖被锁文件 = 'cannot remove
-        # file' 直接炸 Stage 1——izuno 双管线互踩实测）
-        run_tag = f"{os.getpid():x}"
+        # file' 直接炸 Stage 1——izuno 双管线互踩实测）。run_tag 由调用方
+        # （run_mineru）传入，保证 finally 清理扫的是同一批本进程切片；
+        # 未传则自生成（单测直连本函数的场景）。
+        if run_tag is None:
+            run_tag = f"{os.getpid():x}"
 
         def carve(start: int, end: int) -> None:
             n = end - start + 1
@@ -154,7 +158,11 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
     logger.info(f"  文件: {pdf_size_mb:.1f} MB, {total_pages} 页, "
                 f"OCR={'强制' if ocr else '自动'}")
 
-    chunks = _split_pdf_chunks(pdf_path, mineru_out / "_chunks")
+    # 本进程切片文件名标识：切片与 finally 收尾清理共用同一 run_tag，
+    # 只扫本进程切片（047 语义），绝不动并发跑同书的他进程残留。
+    run_tag = f"{os.getpid():x}"
+
+    chunks = _split_pdf_chunks(pdf_path, mineru_out / "_chunks", run_tag=run_tag)
     chunks_needed = len(chunks)
     logger.info(f"  分 {chunks_needed} 片上传（双天花板 "
                 f"{CHUNK_MAX_PAGES} 页/{CHUNK_MAX_BYTES // 2 ** 20}MB）")
@@ -309,12 +317,6 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
             "content_list": all_blocks,
             "images_dir": str(mineru_out / "images"),
             "failed_pages": failed_pages,
-        }
-
-        return {
-            "markdown": merged_md,
-            "content_list": all_blocks,
-            "images_dir": str(mineru_out / "images"),
         }
 
     finally:

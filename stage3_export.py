@@ -54,6 +54,11 @@ def build_units(work_dir: str | Path, use_translations: bool = True) -> list:
     for eng in (structure.get("engine") or "", "vlm", "mineru", "paddleocr"):
         if eng and (work_dir / eng).is_dir():
             cache = _load_cache(work_dir, eng)
+            # 空壳引擎目录（如只余 vlm_state.db 的旧实验残留）不算缓存：
+            # 失败方向=跳过它继续找，绝不用空 content_list 渲染正文
+            # （054 病例：body_range 塌成空 → md/tex 只剩前后页）
+            if not cache["content_list"] and not cache["markdown"]:
+                continue
             content_list, images_dir = cache["content_list"], cache["images_dir"]
             break
     translations = None
@@ -584,8 +589,16 @@ def render_unit_tex(unit: dict, lang: str = "zh") -> str:
             rows = [(r + [""] * ncol)[:ncol] for r in rows]
             spec = _col_spec_tex(rows, ncol)
             out.append("\\begin{longtable}{" + spec + "}\\toprule\\relax")
-            out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns, in_cell=True)}}}" for c in rows[0])
-                       + " \\\\ \\midrule\\relax")
+            if len(rows) > 1:
+                out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns, in_cell=True)}}}" for c in rows[0])
+                           + " \\\\ \\midrule\\relax")
+            else:
+                # 空表体（单行表）：\midrule\relax 后紧跟 \bottomrule 会断
+                # \noalign 连锁（Misplaced \noalign 探针实测——韩非子目录
+                # 单行表）；无数据行也没有 '(' 首单元格吞 trim 的 FG 场景，
+                # \relax 本就多余
+                out.append(" & ".join(f"\\textbf{{{_emit_tokens_tex(c, fns, in_cell=True)}}}" for c in rows[0])
+                           + " \\\\ \\midrule")
             for ri, r in enumerate(rows[1:]):
                 # 非末行 \\ 后 \relax：次行首字符为 '[' 的单元格不被吞成 \\[dimen]
                 # 可选参数（机械手册 '[图]'/'[图：…]' 单元格实测）；末行不加——
@@ -734,6 +747,14 @@ _TEX_PREAMBLE_JA = r"""% !TeX program = xelatex
 """
 
 
+_TEX_FRAGMENT_NOTICE = r"""% ======================================================================
+% 注意：本文件是 TeX 片段（无导言区），不能直接编译！
+% 用法：在你的主文档导言区之后用 \input{本文件名} 引入。
+% 如需可直接编译的完整文档，请在转换设置中开启「完整 TeX 文档」。
+% ======================================================================
+"""
+
+
 def export_tex(units: list, out_dir: Path, book_name: str, title: str,
                images_dir: str, *, full: bool = True, lang: str = "zh",
                author: str = "") -> list[Path]:
@@ -752,7 +773,8 @@ def export_tex(units: list, out_dir: Path, book_name: str, title: str,
                + "\\tableofcontents\n"
                + body + "\n\\end{document}\n")
     else:
-        doc = body + "\n"
+        # 片段防呆：头部注释块明示不可直接编译（TeX 注释，不影响 \input）
+        doc = _TEX_FRAGMENT_NOTICE + body + "\n"
     tex_path = out_dir / f"{_safe_stem(book_name)}.tex"
     tex_path.write_text(doc, encoding="utf-8")
     return [tex_path]

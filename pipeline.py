@@ -19,6 +19,7 @@ import logging
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import config
@@ -40,6 +41,68 @@ from stage2_vlm import analyze_structure_vlm
 from stage3_epub import generate_epub
 from progress_headless import HeadlessProgress, emit_error
 # ProgressWindow（tkinter）改为延迟导入，headless CLI 不打包 tkinter
+
+_ENGINE_DISPLAY = {"mineru": "MinerU", "paddleocr": "PaddleOCR", "vlm": "VLM"}
+
+# 环境类异常（网络/配额/云端服务）：Stage 1 失败提示按运维口径走。
+# 判断失败方向（铁律 0）：拿不准一律按"疑似程序 bug"报——宁可误惊动反馈，
+# 也不把代码 bug 包装成"请检查网络"误导用户空查环境（054 病例）。
+_ENV_ERR_NAMES = {"TimeoutError", "ConnectionError", "ConnectTimeout",
+                  "ReadTimeout", "SSLError", "HTTPError", "ChunkedEncodingError"}
+_ENV_ERR_MODULES = ("requests", "httpx", "urllib3", "http", "ssl", "socket",
+                    "mineru")
+
+
+def _is_env_error(e: Exception) -> bool:
+    """是否环境类（网络/配额/云端）异常。"""
+    if type(e).__name__ in _ENV_ERR_NAMES:
+        return True
+    if type(e).__module__.split(".")[0] in _ENV_ERR_MODULES:
+        return True
+    # run_mineru 网络层 3 次重试耗尽后的包装异常
+    if isinstance(e, RuntimeError) and str(e).startswith("重试 3 次仍失败"):
+        return True
+    return False
+
+
+def _log_unexpected_traceback() -> str:
+    """返回压缩后的 traceback 摘要（末 3 帧），供"疑似 bug"提示引用。"""
+    lines = traceback.format_exc().rstrip().splitlines()
+    return "\n".join(lines[-4:])
+
+
+def _play_fail_sound() -> None:
+    """失败提示音（异步 WAV；CONVERT_FAIL_SOUND=off 可关），镜像完成音接线点。
+    headless 下 GUI 转换是 subprocess，声音从本进程播才能 CLI/GUI 通吃。"""
+    from completion_sound import play_failure_sound
+    play_failure_sound()
+
+
+def _ocr_log_line(engine: str, ocr: bool) -> str:
+    """OCR 旗标日志行。强制 OCR 旗标仅 MinerU 真消费（stage1_mineru）；
+    paddleocr/vlm 的 parse() 签名接收但忽略——日志必须诚实，不误导读了开关。"""
+    if engine == "mineru":
+        return f"OCR: {'强制' if ocr else '自动'}"
+    return f"OCR: 不适用（{_ENGINE_DISPLAY.get(engine, engine)} 逐页视觉解析）"
+
+
+def _estimate_stage_seconds(total_pages: int, engine: str, translate: bool,
+                            skip_mineru: bool) -> list[float]:
+    """各阶段耗时预估（秒）：进度条阶段跨度与 headless 爬行配速的共同输入。
+
+    实测口径：MinerU 云端 ≈ 2.0 s/页（含排队与轮询；旧口径 0.80 只算了云端
+    健康日的纯解析耗时，整体进度偏快约 2 倍）；VLM（glm-5.3-flash/low，
+    workers=4）T6 实测 ≈ 3 s/页；PaddleOCR 实测更快 ≈ 0.5 s/页。
+    """
+    if skip_mineru:
+        est_s1 = 1.0
+    else:
+        est_s1 = max(total_pages * (2.0 if engine == "mineru"
+                                    else 3.0 if engine == "vlm" else 0.50), 30)
+    est_s2 = max(total_pages * 0.14, 15)          # hybrid 两书实测均值 ≈ 0.14 s/页
+    # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
+    est_s3 = max(total_pages * 2.0, 30) if translate else 3.0
+    return [est_s1, est_s2, est_s3, 3.0] if translate else [est_s1, est_s2, 3.0]
 
 
 class _ErrCapture(logging.Handler):
@@ -185,6 +248,7 @@ def main():
         logger.error(f"PDF 文件不存在: {pdf_path}")
         if args.headless:
             emit_error(f"PDF 文件不存在: {pdf_path}")
+        _play_fail_sound()
         sys.exit(1)
 
     # Windows 不允许目录名以空格/点结尾（创建时会被静默剥离，导致
@@ -203,32 +267,23 @@ def main():
     logger.info(f"  书名: {book_name}")
     logger.info(f"  工作目录: {work_dir}")
     logger.info(f"  解析引擎: {engine}")
-    logger.info(f"  OCR: {'强制' if args.ocr else '自动'}")
+    logger.info(f"  {_ocr_log_line(engine, args.ocr)}")
     logger.info("=" * 60)
 
-    # ── 启动进度报告（按实测速率预估各阶段耗时，校准进度条） ──
+    # ── 启动进度报告（按实测速率预估各阶段耗时，校准进度条与爬行配速） ──
     try:
         total_pages = _count_pages(str(pdf_path))
     except Exception:
         total_pages = 300
-    if args.skip_mineru:
-        est_s1 = 1.0
-    else:
-        # MinerU 两书实测均值 ≈ 0.80 s/页；PaddleOCR 实测更快；
-        # VLM（glm-5.3-flash/low，workers=4）T6 实测 ≈ 3 s/页
-        est_s1 = max(total_pages * (0.80 if engine == "mineru"
-                                    else 3.0 if engine == "vlm" else 0.50), 30)
-    est_s2 = max(total_pages * 0.14, 15)          # hybrid 两书实测均值 ≈ 0.14 s/页
-    # 翻译阶段耗时：~6000 字符/批 × 4 并发（另算，见 stage4）
-    est_s3 = max(total_pages * 2.0, 30) if args.translate else 3.0
-    est_list = [est_s1, est_s2, est_s3, 3.0] if args.translate else [est_s1, est_s2, 3.0]
+    est_list = _estimate_stage_seconds(total_pages, engine,
+                                       bool(args.translate), args.skip_mineru)
     if args.headless:
-        pw = HeadlessProgress(book_name, engine="hybrid",
+        pw = HeadlessProgress(book_name, engine=engine,
                               stage_estimates=est_list,
                               translate=bool(args.translate))
     else:
         from progress_ui import ProgressWindow  # 延迟导入，headless 模式不触 tkinter
-        pw = ProgressWindow(book_name, engine="hybrid",
+        pw = ProgressWindow(book_name, engine=engine,
                             stage_estimates=est_list,
                             translate=bool(args.translate))
     pw.start()
@@ -238,8 +293,7 @@ def main():
 
     try:
         # ═══ Stage 1: 解析引擎（MinerU / PaddleOCR / VLM） ═════════════
-        s1_name = {"mineru": "MinerU", "paddleocr": "PaddleOCR",
-                   "vlm": "VLM"}.get(engine, engine)
+        s1_name = _ENGINE_DISPLAY.get(engine, engine)
         mineru_info = None
         if not args.skip_mineru:
             pw.update_stage(1, s1_name, "正在准备 PDF 解析...")
@@ -253,7 +307,14 @@ def main():
                 _save_stage1_metadata(str(work_dir), engine, mineru_info)
             except Exception as e:
                 logger.error(f"Stage 1 ({engine}) 失败: {e}")
-                logger.error("请检查: ① 网络连接 ② API Token 是否有效 ③ PDF 是否损坏")
+                if _is_env_error(e):
+                    logger.error("请检查: ① 网络连接 ② API Token 是否有效 "
+                                 "③ PDF 是否损坏")
+                else:
+                    logger.error("疑似程序 bug（非网络/配额类异常），"
+                                 "请附完整日志反馈。traceback 摘要:")
+                    for line in _log_unexpected_traceback().splitlines():
+                        logger.error(f"  {line}")
                 sys.exit(1)
             stage_times[s1_name] = time.time() - t0
             pw.complete_stage(1, s1_name, stage_times[s1_name])
@@ -346,6 +407,8 @@ def main():
         pw.update_stage(s_epub, "EPUB 生成", "渲染章节 HTML、构建嵌套 TOC、打包...")
         t0 = time.time()
         products: dict[str, list[str]] = {}
+        root_exports: list[Path] = []   # 根级原始导出（交付成功后清理）
+        deliver_ok = False
         try:
             epub_path = generate_epub(
                 book_name,
@@ -355,6 +418,7 @@ def main():
                 pdf_path=str(pdf_path),
                 translations=translations,
             )
+            root_exports.append(Path(epub_path))
             # 复制产物到输出目录：<输出>/<书名>/<格式>/ 每格式自含子目录
             # （md/tex 含 images/；分章 md 目录内容平铺进格式目录）
             import shutil
@@ -400,6 +464,7 @@ def main():
             products["epub"] = [str(epub_path)]
             # ── 平行导出（Markdown/TeX，--format 多选）──
             extra_formats = {f.strip() for f in str(args.formats).split(",")} - {"epub", ""}
+            export_ok = True
             if extra_formats:
                 try:
                     from stage3_export import export_book
@@ -413,13 +478,20 @@ def main():
                         delivered = _deliver(fmt, paths, with_images=True)
                         logger.info(f"  {fmt.upper()} 已复制到: {delivered}")
                         products.setdefault(fmt, []).extend(delivered)
+                        root_exports.extend(Path(p) for p in paths)
                 except Exception as e:
+                    export_ok = False
                     logger.error(f"导出 {sorted(extra_formats)} 失败（EPUB 不受影响）: {e}")
+            deliver_ok = export_ok
         except Exception as e:
             logger.error(f"Stage 3 失败: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
+        # 交付三件套（epub/ md/ tex/）全部复制成功后，清理根级重复
+        # （原始导出与交付副本字节相同）；任一格式失败则不动作（铁律 0）
+        if deliver_ok:
+            _cleanup_root_exports(work_dir, root_exports)
         stage_times["EPUB"] = time.time() - t0
         pw.complete_stage(s_epub, "EPUB 生成", stage_times["EPUB"])
 
@@ -457,7 +529,10 @@ def main():
             "elapsed_s": round(total_elapsed, 1),
             "app_version": __version__,
         })
-        pw.finish(str(epub_path) if args.headless else str(epub_path.name), total_elapsed)
+        # 产物文件夹 = 实际交付目录（撞名避让时 ≠ work_dir：输出在
+        # <输出>/<deliver_name>/<格式>/，按钮要开的是有 epub/ md/ tex/ 的那个）
+        pw.finish(str(epub_path) if args.headless else str(epub_path.name),
+                  total_elapsed, product_dir=str(output_base / deliver_name))
 
         # 完成提示音（异步 WAV；CONVERT_COMPLETE_SOUND=off 可关）
         from completion_sound import play_completion_sound
@@ -469,6 +544,8 @@ def main():
         pw.close()
         if args.headless and (e.code not in (0, None)):
             emit_error(_ErrCapture.first or "转换失败")
+        if e.code not in (0, None):
+            _play_fail_sound()
         raise
     except KeyboardInterrupt:
         pw.close()
@@ -479,10 +556,56 @@ def main():
         pw.close()
         if args.headless:
             emit_error(str(e) or _ErrCapture.first or "转换失败")
+        _play_fail_sound()
         raise
 
 
 _PRODUCT_DIRS = ("epub", "md", "tex")
+
+
+def _cleanup_root_exports(work_dir: Path, export_paths,
+                          delivered_ok: bool = True) -> list[str]:
+    """交付成功后的根级重复清理（病例 049）。
+
+    work_dir 兼任缓存根与交付根：导出流程会在根级留下原始导出
+    （<书名>.epub/.tex/.md、<书名>_md/、images/、cover.jpg），与 _deliver
+    复制进 <格式>/ 子目录的交付副本字节相同。这些根级文件全是每跑必重建
+    的中间产物——epub/tex/md 由 stage3 现写现导出；根级 images/ 由
+    stage3_export._copy_images 从 <engine>/images 现复制（重跑缓存复用时
+    同样走这条路，无人把根级 images/ 当输入）；cover.jpg 由
+    stage3_epub._extract_cover_image 每次从 PDF 首页现渲染。
+
+    失败方向 = 不动作（铁律 0）：只在全部格式交付成功后由调用方触发
+    （delivered_ok=False 直接返回）；只删 work_dir 的直系子项（防导出
+    路径异常误伤他处）；单项删除失败仅告警，绝不影响已交付产物。
+    缓存（<engine>/、structure.json、popo_blocks.json、translations.json）
+    与交付目录（epub/ md/ tex/）不在清理范围。
+    """
+    if not delivered_ok:
+        return []
+    import shutil
+    removed: list[str] = []
+    targets = [Path(p) for p in export_paths]
+    targets += [work_dir / "images", work_dir / "cover.jpg"]
+    seen: set[Path] = set()
+    for t in targets:
+        try:
+            if t in seen or not t.exists():
+                continue
+            seen.add(t)
+            if t.resolve().parent != work_dir.resolve():
+                logger.warning(f"  清理跳过（非工作目录直系子项）: {t}")
+                continue
+            if t.is_dir():
+                shutil.rmtree(t)
+            else:
+                t.unlink()
+            removed.append(t.name)
+        except OSError as e:
+            logger.warning(f"  清理 {t.name} 失败（不影响产物）: {e}")
+    if removed:
+        logger.info(f"  根级中间产物已清理: {', '.join(sorted(removed))}")
+    return removed
 
 
 def _unique_book_dir(output_base: Path, book_name: str) -> str:

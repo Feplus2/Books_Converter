@@ -136,8 +136,9 @@ class ProgressWindow:
         """标记阶段完成"""
         self._queue.put(("complete", stage, title, elapsed))
 
-    def finish(self, epub_path: str, total_elapsed: float):
-        """显示完成摘要"""
+    def finish(self, epub_path: str, total_elapsed: float,
+               product_dir: str | None = None):
+        """显示完成摘要（product_dir 供 headless 透传，GUI 旧版忽略）"""
         self._queue.put(("finish", epub_path, total_elapsed))
 
     def close(self):
@@ -223,10 +224,11 @@ class ProgressWindow:
         # ━━ 阶段卡片（有翻译任务时插入第 叁 张） ━━
         if self._engine == "popo":
             stage2 = ("Popo 4B", "结构重建 · 本地 GPU")
-        elif self._engine == "hybrid":
-            stage2 = ("Hybrid", "结构重建 · 云端 LLM")
+        elif self._engine == "vlm":
+            stage2 = ("VLM-Structure", "结构分析 · 同模型续读")
         else:
-            stage2 = ("DeepSeek V4 Flash", "结构分析 · 云端 LLM")
+            # mineru/paddleocr/hybrid 均走 stage2_hybrid（云端 LLM 结构重建）
+            stage2 = ("Hybrid", "结构重建 · 云端 LLM")
         stages = [
             ("MinerU", "PDF 解析 · OCR · 图片提取"),
             stage2,
