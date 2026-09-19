@@ -49,7 +49,6 @@ export interface Settings {
     zoom: number; // 0.7–1.5，启动时恢复
   };
   sound: boolean; // 完成提示音
-  scanDirs: string[];
   historyDirs: string[];
 }
 
@@ -84,7 +83,6 @@ export function defaultSettings(): Settings {
     defaults: defaultConvertOptions(),
     appearance: { theme: "system", zoom: 1 },
     sound: true,
-    scanDirs: [],
     historyDirs: [],
   };
 }
@@ -189,6 +187,25 @@ export function buildCliArgs(o: ConvertOptions): string[] {
 
 type Listener = () => void;
 
+/** 仓库内暂存区判定（病例 052）：dev 冒烟产物目录（_regress/、output/、.tmp-*）
+ *  不进 historyDirs。以路径中的 books_converter 段锚定，判不准时宁可 false
+ *  （只可能少清理，绝不误伤用户正常目录——铁律 0 的失败方向）。 */
+export function isRepoInternalDir(dir: string): boolean {
+  const norm = dir.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const m = norm.match(/(?:^|\/)books_converter\/(.+)$/);
+  if (!m) return false;
+  const rest = m[1];
+  return ["_regress", "output", ".tmp-epub-zh", ".tmp-toc-fix"].some(
+    (seg) => rest === seg || rest.startsWith(seg + "/"),
+  );
+}
+
+/** historyDirs 清理的纯函数部分：剔除仓库内暂存区（存在性剔除走 Rust
+ *  existing_dirs，异步侧见 SettingsStore.pruneHistoryDirs）（病例 052） */
+export function pruneRepoInternalDirs(dirs: string[]): string[] {
+  return dirs.filter((d) => d && !isRepoInternalDir(d));
+}
+
 /** 旧字段迁移：engine → mode/ruleEngine；textModel → defaults.postModel；
  *  provider/model 补 enabled；appearance 字符串 → {theme, zoom}（导出供 vitest） */
 export function migrate(parsed: Partial<Settings> & Record<string, unknown>): Settings {
@@ -239,7 +256,9 @@ export function migrate(parsed: Partial<Settings> & Record<string, unknown>): Se
       zoom: Math.min(1.5, Math.max(0.7, Number(a.zoom) || 1)),
     };
   }
-  return {
+  // 病例 053：扫描/忽略功能移除——旧配置里已持久化的 scanDirs/ignoredPaths
+  // 静默丢弃（加载不炸、下次保存落盘即清），不加校验也不报错
+  const merged: Settings = {
     ...base,
     ...parsed,
     ocr: { ...base.ocr, ...(parsed.ocr ?? {}) },
@@ -248,18 +267,51 @@ export function migrate(parsed: Partial<Settings> & Record<string, unknown>): Se
     appearance,
     sound: parsed.sound ?? true,
   };
+  const dropped = merged as unknown as Record<string, unknown>;
+  delete dropped.scanDirs;
+  delete dropped.ignoredPaths;
+  return merged;
+}
+
+/** read_settings_state 命令的返回形状 */
+interface SettingsFileState {
+  mtime_ms: number | null;
+  content: string | null;
 }
 
 class SettingsStore {
   settings: Settings = defaultSettings();
   loaded = false;
   private listeners = new Set<Listener>();
+  /** 最后一次亲自读到/写到的文件内容原文（聚焦重载的变更判定基准） */
+  private lastSyncedJson: string | null = null;
+  /** 最后一次亲自见到的文件 mtime（毫秒） */
+  private fileMtimeMs: number | null = null;
+  /** 最后一次亲自发起保存的墙钟时间（自己写入引起的 mtime 变化不触发重载） */
+  private lastWriteAt = 0;
+  private reloading = false;
 
   async load() {
     try {
-      const raw = await invoke<string | null>("load_settings");
+      // 首选带 mtime 的状态读（dev 分叉后读 settings.dev.json）；
+      // 命令不可用/读失败 → 退回 load_settings（失败方向=保住加载链路）
+      let raw: string | null = null;
+      try {
+        const st = await invoke<SettingsFileState>("read_settings_state");
+        if (st.content) {
+          this.fileMtimeMs = st.mtime_ms;
+          raw = st.content;
+        }
+      } catch {
+        /* fallthrough 到 load_settings */
+      }
+      if (!raw) {
+        // dev 文件尚不存在：load_settings 在 debug 下一次性继承正式配置
+        raw = await invoke<string | null>("load_settings");
+      }
       if (raw) {
         this.settings = migrate(JSON.parse(raw));
+        this.lastSyncedJson = raw;
       } else {
         // 首次运行：预填默认输出目录建议值
         const dir = await invoke<string>("default_output_dir").catch(() => "");
@@ -268,20 +320,72 @@ class SettingsStore {
     } catch (e) {
       console.error("load_settings failed", e);
     }
+    await this.pruneHistoryDirs();
     this.loaded = true;
     this.emit();
+  }
+
+  /** 窗口聚焦重载（病例 052，多实例内存分叉的对策）：磁盘内容比内存新才替换；
+   *  读取/解析失败、文件被删、内容与自己同步过的一致 → 全部保持内存不动作（铁律 0） */
+  async reloadIfChanged() {
+    if (!this.loaded || this.reloading) return;
+    this.reloading = true;
+    try {
+      const st = await invoke<SettingsFileState>("read_settings_state");
+      if (st.content == null) return; // 文件不存在（dev 还没保存过）→ 不动作
+      if (st.mtime_ms != null) {
+        if (this.fileMtimeMs != null && st.mtime_ms === this.fileMtimeMs) return; // 同一版本
+        if (this.lastWriteAt > 0 && st.mtime_ms <= this.lastWriteAt) return; // 自己刚写的
+      }
+      if (st.content === this.lastSyncedJson) {
+        this.fileMtimeMs = st.mtime_ms;
+        return; // 内容一致（可能是自己保存后 mtime 更新）
+      }
+      const next = migrate(JSON.parse(st.content)); // 解析失败抛错 → catch 保持内存
+      this.settings = next;
+      this.lastSyncedJson = st.content;
+      this.fileMtimeMs = st.mtime_ms;
+      await this.pruneHistoryDirs();
+      this.emit();
+    } catch (e) {
+      console.warn("settings 聚焦重载跳过（保持内存）", e);
+    } finally {
+      this.reloading = false;
+    }
+  }
+
+  /** 病例 052 去污：historyDirs 剔除仓库内暂存区与已不存在的目录（内存生效，
+   *  下次保存落盘；存在性检查失败=保留原样，不动作） */
+  private async pruneHistoryDirs() {
+    const before = this.settings.historyDirs;
+    let kept = pruneRepoInternalDirs(before);
+    try {
+      kept = await invoke<string[]>("existing_dirs", { dirs: kept });
+    } catch {
+      /* 存在性判定不可用 → 只做仓库内剔除，其余保留 */
+    }
+    const changed =
+      kept.length !== before.length || kept.some((d, i) => d !== before[i]);
+    if (changed) {
+      this.settings = { ...this.settings, historyDirs: kept };
+    }
   }
 
   update(patch: Partial<Settings>) {
     this.settings = { ...this.settings, ...patch };
     this.emit();
-    invoke("save_settings", { json: JSON.stringify(this.settings, null, 2) }).catch((e) =>
+    const json = JSON.stringify(this.settings, null, 2);
+    this.lastSyncedJson = json;
+    this.lastWriteAt = Date.now();
+    invoke("save_settings", { json }).catch((e) =>
       console.error("save_settings failed", e),
     );
   }
 
   addHistoryDir(dir: string) {
     if (!dir) return;
+    // 病例 052：dev 冒烟的仓库内暂存目录不再持久化进历史（污染源之一）
+    if (isRepoInternalDir(dir)) return;
     const rest = this.settings.historyDirs.filter((d) => d !== dir);
     this.update({ historyDirs: [dir, ...rest].slice(0, 20) });
   }

@@ -1,34 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { notify } from "../lib/notify";
 import {
   ArrowLeft,
   ExternalLink,
-  FileQuestion,
-  FolderSearch,
   FolderSymlink,
   ListX,
   RefreshCw,
   RotateCcw,
   Search,
-  X,
 } from "lucide-react";
-import type { ProductFile, RegistryItem, UnregisteredItem } from "../lib/registry";
-import { settingsStore, useSettings, type Settings } from "../lib/settings";
+import { fileRowActions, registryDirsOf, type ProductFile, type RegistryItem } from "../lib/registry";
+import { useSettings, type Settings } from "../lib/settings";
 import { buildReconvertOptions } from "../lib/reconvert";
 import { queueStore } from "../lib/queue";
 import { navigate } from "../lib/nav";
-import { S, formatElapsed } from "../lib/strings";
+import { S, engineName, formatElapsed } from "../lib/strings";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { ProductCard, fmtSize, fmtTime } from "../components/ProductCard";
 import { Select } from "../components/Select";
 import { Tooltip } from "../components/Tooltip";
-
-type Detail =
-  | { kind: "registered"; item: RegistryItem }
-  | { kind: "unregistered"; item: UnregisteredItem };
 
 /** 「再次转换」：用记录重放选项推进队列（高亮），跳转换页 */
 function reconvertItem(item: RegistryItem, settings: Settings) {
@@ -47,7 +39,7 @@ function reconvertItem(item: RegistryItem, settings: Settings) {
   );
   queueStore.add([item.source_pdf], options, true);
   navigate({ page: "convert" });
-  notify.success(S.library.toastReconvert);
+  notify.success(S.library.toastReconvert(item.engine));
   if (modelFallback) {
     notify.warning(S.library.toastModelFallback(item.vlm_model ?? ""));
   }
@@ -73,47 +65,91 @@ function ReconvertButton({ item, settings }: { item: RegistryItem; settings: Set
   );
 }
 
-export function LibraryPage() {
-  const settings = useSettings();
-  const [items, setItems] = useState<RegistryItem[]>([]);
-  const [unregistered, setUnregistered] = useState<UnregisteredItem[]>([]);
-  const [search, setSearch] = useState("");
-  const [fmtFilter, setFmtFilter] = useState("");
-  const [engineFilter, setEngineFilter] = useState("");
-  const [detail, setDetail] = useState<Detail | null>(null);
-
-  const knownDirs = useMemo(() => {
-    const all = [
-      settings.defaults.outputDir,
-      ...settings.scanDirs,
-      ...settings.historyDirs,
-    ].filter(Boolean);
-    return [...new Set(all)];
-  }, [settings]);
-
-  const refresh = useCallback(async () => {
-    if (!knownDirs.length) {
-      setItems([]);
-      setUnregistered([]);
-      return;
-    }
+/** 卡片级「删除记录」（病例 052）：两段确认，文案明示只删登记记录、不动产物文件 */
+function RemoveEntryButton({ item, onChanged }: { item: RegistryItem; onChanged: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const remove = async () => {
     try {
-      const [reg, unreg] = await Promise.all([
-        invoke<RegistryItem[]>("read_registry", { dirs: knownDirs }),
-        invoke<UnregisteredItem[]>("scan_unregistered", { dirs: knownDirs }),
-      ]);
-      setItems(reg);
-      setUnregistered(unreg);
+      await invoke("remove_entry", { registryPath: item.registry_path, ts: item.ts });
+      notify.success(S.library.toastRemoved);
+      onChanged();
     } catch (e) {
       notify.error(String(e));
     }
-  }, [knownDirs]);
+  };
+  if (confirming) {
+    return (
+      <span className="card flex items-center gap-1.5 rounded-md px-2 py-1">
+        <span className="text-xs whitespace-nowrap" style={{ color: "var(--warn)" }}>
+          {S.library.removeConfirmFiles}
+        </span>
+        <button
+          className="text-xs font-medium"
+          style={{ color: "var(--err)" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            void remove();
+          }}
+        >
+          {S.common.confirm}
+        </button>
+        <button
+          className="text-xs"
+          style={{ color: "var(--ink2)" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(false);
+          }}
+        >
+          {S.common.cancel}
+        </button>
+      </span>
+    );
+  }
+  return (
+    <Tooltip label={S.library.removeTooltip}>
+      <button
+        className="icon-btn"
+        onClick={(e) => {
+          e.stopPropagation();
+          setConfirming(true);
+        }}
+      >
+        <ListX size={15} />
+      </button>
+    </Tooltip>
+  );
+}
+
+export function LibraryPage() {
+  const settings = useSettings();
+  const [items, setItems] = useState<RegistryItem[]>([]);
+  const [search, setSearch] = useState("");
+  const [fmtFilter, setFmtFilter] = useState("");
+  const [engineFilter, setEngineFilter] = useState("");
+  const [detail, setDetail] = useState<RegistryItem | null>(null);
+
+  // 病例 053 纯登记制：产物库只读登记文件（outputDir + historyDirs 里的
+  // _registry.jsonl）。不做目录扫描——扫描曾把通用目录（如 D:\temp_files）
+  // 里的本机文档误判进产物库；用户自己挪/删的文件显示「丢失」徽标，不追踪。
+  const registryDirs = useMemo(() => registryDirsOf(settings), [settings]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const reg = registryDirs.length
+        ? await invoke<RegistryItem[]>("read_registry", { dirs: registryDirs })
+        : [];
+      setItems(reg);
+    } catch (e) {
+      notify.error(String(e));
+    }
+  }, [registryDirs]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const engines = useMemo(() => [...new Set(items.map((i) => i.engine).filter(Boolean))], [items]);
+  const engines = [...new Set(items.map((i) => i.engine).filter(Boolean))];
 
   const filtered = items.filter((i) => {
     if (search && !i.title.toLowerCase().includes(search.toLowerCase())) return false;
@@ -121,31 +157,16 @@ export function LibraryPage() {
     if (engineFilter && i.engine !== engineFilter) return false;
     return true;
   });
-  const filteredUnreg = unregistered.filter((i) => {
-    if (search && !i.name.toLowerCase().includes(search.toLowerCase())) return false;
-    if (fmtFilter && i.fmt !== fmtFilter) return false;
-    if (engineFilter) return false;
-    return true;
-  });
-
-  const addScanDir = async () => {
-    const dir = await openDialog({ directory: true });
-    if (typeof dir === "string" && !settings.scanDirs.includes(dir)) {
-      settingsStore.update({ scanDirs: [...settings.scanDirs, dir] });
-      notify.success(S.library.toastRefreshed);
-    }
-  };
 
   // ── 详情子视图 ──
   if (detail) {
     return (
       <DetailView
-        detail={detail}
+        item={detail}
         onBack={() => {
           setDetail(null);
           void refresh();
         }}
-        onChanged={() => void refresh()}
       />
     );
   }
@@ -184,7 +205,7 @@ export function LibraryPage() {
           onChange={setEngineFilter}
           options={[
             { value: "", label: S.library.filterEngine },
-            ...engines.map((e) => ({ value: e, label: e })),
+            ...engines.map((e) => ({ value: e, label: engineName(e) })),
           ]}
         />
         <Tooltip label={S.library.refreshTooltip}>
@@ -198,79 +219,23 @@ export function LibraryPage() {
             <RefreshCw size={15} />
           </button>
         </Tooltip>
-        <Tooltip label={S.library.addScanDirTooltip}>
-          <button className="icon-btn" onClick={addScanDir}>
-            <FolderSearch size={15} />
-          </button>
-        </Tooltip>
       </div>
 
-      {/* 扫描目录 chips */}
-      {settings.scanDirs.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs" style={{ color: "var(--ink2)" }}>
-            {S.library.scanDirs}:
-          </span>
-          {settings.scanDirs.map((d) => (
-            <span key={d} className="card flex items-center gap-1 rounded-md px-2 py-0.5 text-xs">
-              <span className="mono max-w-64 truncate" style={{ color: "var(--ink2)" }}>
-                {d}
-              </span>
-              <button
-                className="icon-btn"
-                style={{ width: 20, height: 20 }}
-                onClick={() =>
-                  settingsStore.update({
-                    scanDirs: settings.scanDirs.filter((x) => x !== d),
-                  })
-                }
-              >
-                <X size={11} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
       {/* 卡片流 */}
-      {filtered.length + filteredUnreg.length ? (
+      {filtered.length ? (
         <div className="mt-4 grid grid-cols-2 gap-3 pb-8">
           {filtered.map((i) => (
             <ProductCard
               key={`${i.registry_path}:${i.ts}`}
               item={i}
-              onOpen={() => setDetail({ kind: "registered", item: i })}
-              action={<ReconvertButton item={i} settings={settings} />}
+              onOpen={() => setDetail(i)}
+              action={
+                <span className="flex items-center gap-1">
+                  <ReconvertButton item={i} settings={settings} />
+                  <RemoveEntryButton item={i} onChanged={() => void refresh()} />
+                </span>
+              }
             />
-          ))}
-          {filteredUnreg.map((i) => (
-            <button
-              key={i.path}
-              className="card lift w-full cursor-pointer p-4 text-left"
-              onClick={() => setDetail({ kind: "unregistered", item: i })}
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-                  style={{
-                    background: "color-mix(in srgb, var(--ink) 8%, transparent)",
-                    color: "var(--ink2)",
-                  }}
-                >
-                  <FileQuestion size={18} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{i.name}</div>
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    <Badge tone="muted">{i.fmt.toUpperCase()}</Badge>
-                    <Badge tone="warn">{S.library.badgeUnregistered}</Badge>
-                  </div>
-                  <div className="mono mt-1.5 truncate text-xs" style={{ color: "var(--ink2)" }}>
-                    {fmtSize(i.size)}
-                  </div>
-                </div>
-              </div>
-            </button>
           ))}
         </div>
       ) : (
@@ -295,35 +260,7 @@ function MetaRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
-function FileRow({
-  file,
-  registryPath,
-  ts,
-  onChanged,
-}: {
-  file: ProductFile;
-  registryPath?: string;
-  ts?: string;
-  onChanged: () => void;
-}) {
-  const relocate = async () => {
-    const selected = await openDialog(file.is_dir ? { directory: true } : { multiple: false });
-    if (typeof selected !== "string") return;
-    try {
-      await invoke("relocate_entry", {
-        registryPath,
-        ts,
-        fmt: file.fmt,
-        oldPath: file.path,
-        newPath: selected,
-      });
-      notify.success(S.library.toastRelocated);
-      onChanged();
-    } catch (e) {
-      notify.error(String(e));
-    }
-  };
-
+function FileRow({ file }: { file: ProductFile }) {
   return (
     <div
       className="card lift flex items-center gap-3 px-3 py-2"
@@ -339,9 +276,9 @@ function FileRow({
           {file.exists ? fmtSize(file.size) : S.library.badgeMissing} · {file.path}
         </div>
       </div>
-      {file.exists ? (
+      {file.exists && (
         <>
-          <Tooltip label={S.library.open}>
+          <Tooltip label={S.library[fileRowActions(file).openTooltip]}>
             <button
               className="icon-btn"
               onClick={() => invoke("open_file", { path: file.path }).catch((e) => notify.error(String(e)))}
@@ -349,82 +286,30 @@ function FileRow({
               <ExternalLink size={14} />
             </button>
           </Tooltip>
-          <Tooltip label={S.library.reveal}>
-            <button
-              className="icon-btn"
-              onClick={() =>
-                invoke("reveal_in_explorer", { path: file.path }).catch((e) => notify.error(String(e)))
-              }
-            >
-              <FolderSymlink size={14} />
-            </button>
-          </Tooltip>
+          {/* 目录行不渲染 reveal：与 open 等价且旧实现（explorer /select 目录）
+              必翻车回落「文档」主文件夹（病例 057） */}
+          {fileRowActions(file).showReveal && (
+            <Tooltip label={S.library.reveal}>
+              <button
+                className="icon-btn"
+                onClick={() =>
+                  invoke("reveal_in_explorer", { path: file.path }).catch((e) => notify.error(String(e)))
+                }
+              >
+                <FolderSymlink size={14} />
+              </button>
+            </Tooltip>
+          )}
         </>
-      ) : (
-        registryPath && (
-          <Tooltip label={S.library.relocateTooltip}>
-            <button className="btn" onClick={relocate}>
-              {S.library.relocate}
-            </button>
-          </Tooltip>
-        )
       )}
     </div>
   );
 }
 
-function DetailView({
-  detail,
-  onBack,
-  onChanged,
-}: {
-  detail: Detail;
-  onBack: () => void;
-  onChanged: () => void;
-}) {
+function DetailView({ item, onBack }: { item: RegistryItem; onBack: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const settings = useSettings();
 
-  if (detail.kind === "unregistered") {
-    const i = detail.item;
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-6">
-        <button className="btn btn-ghost mb-4" onClick={onBack}>
-          <ArrowLeft size={14} /> {S.library.back}
-        </button>
-        <div className="card p-5">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-[15px] font-semibold">{i.name}</span>
-            <Badge tone="warn">{S.library.badgeUnregistered}</Badge>
-          </div>
-          <div className="mb-4 text-xs" style={{ color: "var(--ink2)" }}>
-            {S.library.unregisteredHint}
-          </div>
-          <MetaRow label={S.library.metaFormats} value={i.fmt.toUpperCase()} />
-          <MetaRow label={S.library.size} value={fmtSize(i.size)} />
-          <MetaRow label={S.library.path} value={i.path} mono />
-          <div className="mt-4 flex gap-2">
-            <button
-              className="btn btn-primary"
-              onClick={() => invoke("open_file", { path: i.path }).catch((e) => notify.error(String(e)))}
-            >
-              <ExternalLink size={14} /> {S.library.open}
-            </button>
-            <button
-              className="btn"
-              onClick={() =>
-                invoke("reveal_in_explorer", { path: i.path }).catch((e) => notify.error(String(e)))
-              }
-            >
-              <FolderSymlink size={14} /> {S.library.reveal}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const item = detail.item;
   const remove = async () => {
     try {
       await invoke("remove_entry", { registryPath: item.registry_path, ts: item.ts });
@@ -456,7 +341,7 @@ function DetailView({
           {confirming ? (
             <span className="flex items-center gap-2">
               <span className="text-xs" style={{ color: "var(--warn)" }}>
-                {S.library.removeConfirm}
+                {S.library.removeConfirmFiles}
               </span>
               <button className="btn" style={{ color: "var(--err)" }} onClick={remove}>
                 {S.common.confirm}
@@ -485,7 +370,7 @@ function DetailView({
           {S.library.metaTitle}
         </div>
         <MetaRow label={S.library.metaTime} value={fmtTime(item.ts)} />
-        <MetaRow label={S.library.metaEngine} value={item.engine} />
+        <MetaRow label={S.library.metaEngine} value={engineName(item.engine)} />
         <MetaRow label={S.library.metaFormats} value={item.formats.join(", ").toUpperCase()} />
         <MetaRow label={S.library.metaOcr} value={item.ocr ? S.library.yes : S.library.no} />
         <MetaRow label={S.library.metaTranslate} value={item.translate ?? S.library.no} />
@@ -499,13 +384,7 @@ function DetailView({
         </div>
         <div className="flex flex-col gap-2">
           {item.files.map((f) => (
-            <FileRow
-              key={`${f.fmt}:${f.path}`}
-              file={f}
-              registryPath={item.registry_path}
-              ts={item.ts}
-              onChanged={onChanged}
-            />
+            <FileRow key={`${f.fmt}:${f.path}`} file={f} />
           ))}
         </div>
       </div>

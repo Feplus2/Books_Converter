@@ -25,9 +25,11 @@ describe("strings 完整性（i18n 收编后的关键键）", () => {
   });
 
   it("再次转换/队列日志/缩放文案", () => {
-    expect(S.library.toastReconvert).toContain("队列");
+    expect(S.library.toastReconvert("vlm")).toContain("队列");
+    expect(S.library.toastReconvert("vlm")).toContain("VLM"); // 引擎名入 toast
     expect(S.library.sourceMissing("F:/a.pdf")).toContain("F:/a.pdf");
     expect(S.convert.logStart("书", "vlm")).toContain("书");
+    expect(S.convert.logStart("书", "vlm")).toContain("VLM"); // 显示名而非裸 id
     expect(S.convert.stageProgress(1, 3, "VLM")).toContain("1/3");
     expect(S.settings.zoomHint(110)).toContain("110%");
   });

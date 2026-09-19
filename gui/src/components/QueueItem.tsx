@@ -1,19 +1,21 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  BookCheck,
   ChevronDown,
   ChevronRight,
   CircleAlert,
   CircleCheck,
+  FolderOpen,
   Loader2,
   Clock3,
+  RotateCcw,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { queueStore, type QueueTask } from "../lib/queue";
 import { notify } from "../lib/notify";
-import { S, formatElapsed } from "../lib/strings";
+import { engineOf } from "../lib/settings";
+import { S, engineName, formatElapsed } from "../lib/strings";
 import { Badge } from "./Badge";
 import { ProgressBar } from "./ProgressBar";
 import { Tooltip } from "./Tooltip";
@@ -52,6 +54,7 @@ function StatusBadge({ task }: { task: QueueTask }) {
 export function QueueItem({ task }: { task: QueueTask }) {
   const [expanded, setExpanded] = useState(false);
   const cancellable = task.status === "queued" || task.status === "running";
+  const retryable = task.status === "error" || task.status === "cancelled";
 
   return (
     <div className={`card lift p-3${task.highlight ? " queue-flash" : ""}`}>
@@ -59,6 +62,7 @@ export function QueueItem({ task }: { task: QueueTask }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-medium">{task.title}</span>
+            <Badge tone="muted">{engineName(engineOf(task.options))}</Badge>
             <StatusBadge task={task} />
             {task.elapsed != null && (
               <span className="mono text-xs" style={{ color: "var(--ink2)" }}>
@@ -71,13 +75,22 @@ export function QueueItem({ task }: { task: QueueTask }) {
               <ProgressBar
                 percent={task.percent}
                 stage={task.stage}
-                stagesTotal={task.stagesTotal}
+                bounds={task.stageBounds}
               />
             </div>
           )}
           {task.status === "running" && task.stageName && (
             <div className="mt-1 text-xs" style={{ color: "var(--ink2)" }}>
               {S.convert.stageProgress(task.stage ?? 0, task.stagesTotal, task.stageName)}
+            </div>
+          )}
+          {task.status === "running" && task.detail && (
+            <div
+              className="mono mt-0.5 truncate text-xs"
+              style={{ color: "var(--ink2)" }}
+              title={task.detail}
+            >
+              {task.detail}
             </div>
           )}
           {task.stalled && task.status === "running" && (
@@ -95,16 +108,16 @@ export function QueueItem({ task }: { task: QueueTask }) {
           )}
         </div>
 
-        {task.status === "done" && task.epubPath && (
+        {task.status === "done" && (task.productDir || task.epubPath) && (
           <button
             className="btn btn-ghost shrink-0"
             onClick={() =>
-              invoke("open_file", { path: task.epubPath }).catch((e) =>
-                notify.error(String(e)),
-              )
+              invoke("open_file", {
+                path: task.productDir ?? task.epubPath,
+              }).catch((e) => notify.error(String(e)))
             }
           >
-            <BookCheck size={14} /> {S.convert.openEpub}
+            <FolderOpen size={14} /> {S.convert.openFolder}
           </button>
         )}
         <Tooltip label={expanded ? S.convert.collapseLog : S.convert.expandLog}>
@@ -116,6 +129,17 @@ export function QueueItem({ task }: { task: QueueTask }) {
           <Tooltip label={S.convert.cancelTooltip}>
             <button className="icon-btn" onClick={() => queueStore.cancel(task.id)}>
               <X size={16} />
+            </button>
+          </Tooltip>
+        )}
+        {retryable && (
+          <Tooltip label={S.convert.retryTooltip}>
+            <button
+              className="icon-btn"
+              aria-label={S.convert.retry}
+              onClick={() => queueStore.retry(task.id)}
+            >
+              <RotateCcw size={16} />
             </button>
           </Tooltip>
         )}

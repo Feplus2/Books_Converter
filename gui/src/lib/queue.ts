@@ -11,12 +11,23 @@ import {
   type ConvertOptions,
 } from "./settings";
 import { precheckTask } from "./precheck";
+import { startSummaryText } from "./start-summary";
 import { humanizeError } from "./errors";
 import { notify } from "./notify";
 import { navigate } from "./nav";
 import { S } from "./strings";
 
 export type TaskStatus = "queued" | "running" | "done" | "error" | "cancelled";
+
+/** 从 epub 交付路径上溯产物文件夹：交付恒为 <work_dir>/epub/<书名>.epub，
+    去文件名再上溯一级即 work_dir。正反斜杠通吃；形态不符返回 undefined
+    （失败方向=不动作，按钮退回旧行为开 epub）。 */
+export function productDirOf(epubPath: string): string | undefined {
+  const norm = epubPath.replace(/\//g, "\\");
+  const parts = norm.split("\\").filter(Boolean);
+  if (parts.length < 3) return undefined; // 盘符 + epub + 文件名 至少 3 段
+  return parts.slice(0, -2).join("\\");
+}
 
 export interface QueueTask {
   id: string;
@@ -28,10 +39,18 @@ export interface QueueTask {
   stage: number | null;
   stageName: string;
   stagesTotal: number;
+  /** start 事件携带的阶段边界（累计百分比）；旧 sidecar 无此字段 → null（不画刻度点） */
+  stageBounds: number[] | null;
+  /** 最新一条 detail（如「VLM 阅读 120/549 页」），卡片常显详情行 */
+  detail: string;
   logs: string[];
   error?: string; // 人话标题
   errorDetail?: string; // 原文（技术细节）
   epubPath?: string;
+  /** 产物文件夹（<输出目录>/<书名>/，内含 epub/ md/ tex/）：done 事件
+      product_dir 透传；无该字段时从 epub_path 上溯两级兜底（交付恒为
+      <work_dir>/epub/<书名>.epub） */
+  productDir?: string;
   elapsed?: number;
   exitCode?: number | null;
   lastEventAt: number;
@@ -72,6 +91,8 @@ class QueueStore {
         stage: null,
         stageName: "",
         stagesTotal: options.translate ? 4 : 3,
+        stageBounds: null,
+        detail: "",
         logs: [],
         lastEventAt: Date.now(),
         stalled: false,
@@ -133,6 +154,12 @@ class QueueStore {
       this.emit();
       return;
     }
+    // ③ 起跑前引擎汇总可见（病例 052：入队即快照选项，点火前明示将用哪个引擎）
+    notify.info(
+      startSummaryText(
+        this.tasks.filter((t) => t.status === "queued").map((t) => t.options),
+      ),
+    );
     this.started = true;
     this.emit();
     void this.pump();
@@ -204,12 +231,20 @@ class QueueStore {
     switch (ev.type) {
       case "start":
         task.logs.push(S.convert.logStart(ev.title, ev.engine));
+        if (ev.stage_bounds?.length) {
+          // 按预估加权的真实阶段边界：刻度点与阶段总数都以它为准
+          task.stageBounds = ev.stage_bounds;
+          task.stagesTotal = ev.stage_bounds.length;
+        }
         break;
       case "progress":
         task.percent = ev.percent;
         if (ev.stage != null) task.stage = ev.stage;
         if (ev.stage_name) task.stageName = ev.stage_name;
-        if (ev.detail) this.pushLog(task, ev.detail);
+        if (ev.detail) {
+          task.detail = ev.detail;
+          this.pushLog(task, ev.detail);
+        }
         break;
       case "stage_done":
         task.percent = ev.percent;
@@ -222,6 +257,7 @@ class QueueStore {
         task.status = "done";
         task.percent = 100;
         task.epubPath = ev.epub_path;
+        task.productDir = ev.product_dir || productDirOf(ev.epub_path);
         task.elapsed = ev.elapsed;
         break;
       case "error": {
@@ -264,6 +300,38 @@ class QueueStore {
     this.cleanup(task.id);
     this.emit();
     void this.pump();
+  }
+
+  /**
+   * 【重试】失败/已取消任务：就地重置回 queued（不新建卡片，选项快照原样
+   * 保留），随后走 startAll 标准路径——052 预检/输出目录兜底/引擎汇总照旧
+   * 生效（预检不过会重新置 error，不会带病起跑）。其他状态一律不动作
+   * （铁律 0）。
+   */
+  retry(id: string) {
+    const task = this.tasks.find((t) => t.id === id);
+    if (!task) return;
+    if (task.status !== "error" && task.status !== "cancelled") return;
+    task.status = "queued";
+    task.percent = 0;
+    task.stage = null;
+    task.stageName = "";
+    task.stagesTotal = task.options.translate ? 4 : 3;
+    task.stageBounds = null;
+    task.detail = "";
+    task.error = undefined;
+    task.errorDetail = undefined;
+    task.epubPath = undefined;
+    task.productDir = undefined;
+    task.elapsed = undefined;
+    task.exitCode = undefined;
+    task.cancelAskedAt = undefined;
+    task.stalled = false;
+    task.lastEventAt = Date.now();
+    this.pushLog(task, S.convert.logRetry(task.title));
+    notify.info(S.convert.toastRetry(task.title));
+    this.emit();
+    void this.startAll();
   }
 
   cancel(id: string) {

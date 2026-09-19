@@ -31,6 +31,7 @@ import {
 import { presetOf, PROVIDER_PRESETS, presetName } from "../lib/providers";
 import { modelSupportsVision } from "../lib/vision-map";
 import { notify } from "../lib/notify";
+import { updateResultToMsg, type UpdateMsg } from "../lib/updater";
 import type { SettingsSection } from "../lib/precheck";
 import { S } from "../lib/strings";
 import { Badge } from "../components/Badge";
@@ -417,7 +418,7 @@ function OptionsSection() {
   const settings = useSettings();
   const opts = settings.defaults;
   const [checking, setChecking] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState<{ tone: "ok" | "warn" | "err"; text: string; url?: string } | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<UpdateMsg | null>(null);
   const setOpts = (patch: Partial<ConvertOptions>) =>
     settingsStore.update({ defaults: { ...opts, ...patch } });
 
@@ -451,22 +452,15 @@ function OptionsSection() {
       const r = await invoke<{ status: string; latest?: string; url?: string; error?: string }>(
         "check_update",
       );
-      if (r.status === "latest") {
-        setUpdateMsg({ tone: "ok", text: S.settings.updateLatest });
-        notify.success(S.settings.updateLatest);
-      } else if (r.status === "update") {
-        const text = S.settings.updateFound(r.latest ?? "");
-        setUpdateMsg({ tone: "warn", text, url: r.url });
-        notify.warning(text);
-      } else {
-        const text = S.settings.updateFailed(r.error ?? "");
-        setUpdateMsg({ tone: "err", text });
-        notify.error(text);
-      }
+      const msg = updateResultToMsg(r);
+      setUpdateMsg(msg);
+      if (msg.tone === "ok") notify.success(msg.text);
+      else if (msg.tone === "warn") notify.warning(msg.text);
+      else notify.error(msg.text);
     } catch (e) {
-      const text = S.settings.updateFailed(String(e));
-      setUpdateMsg({ tone: "err", text });
-      notify.error(text);
+      const msg = updateResultToMsg({ status: "failed", error: String(e) });
+      setUpdateMsg(msg);
+      notify.error(msg.text);
     } finally {
       setChecking(false);
     }

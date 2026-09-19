@@ -115,12 +115,19 @@ export default function App() {
 
   useEffect(() => {
     void settingsStore.load();
-    return onNavigate((t) => {
+    // 病例 052：多实例共用配置文件时，窗口聚焦即从磁盘重载新内容（失败保持内存）
+    const onFocus = () => void settingsStore.reloadIfChanged();
+    window.addEventListener("focus", onFocus);
+    const unsubNav = onNavigate((t) => {
       setPage(t.page);
       if (t.page === "settings") {
         setSettingsTarget({ section: t.section, providerId: t.providerId });
       }
     });
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      unsubNav();
+    };
   }, []);
 
   // 主题

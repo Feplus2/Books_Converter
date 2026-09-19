@@ -111,7 +111,14 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_config_dir()
         .map_err(|e| format!("无法定位配置目录: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    Ok(dir.join("settings.json"))
+    // 病例 052：debug（tauri dev）与正式包同 identifier 会共用同一份
+    // settings.json，多实例整对象互写、最后写入者胜——dev 分叉到独立文件
+    let name = if cfg!(debug_assertions) {
+        "settings.dev.json"
+    } else {
+        "settings.json"
+    };
+    Ok(dir.join(name))
 }
 
 #[tauri::command]
@@ -119,9 +126,48 @@ fn load_settings(app: AppHandle) -> Result<Option<String>, String> {
     let path = settings_path(&app)?;
     match std::fs::read_to_string(&path) {
         Ok(s) => Ok(Some(s)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // dev 分叉首次运行：一次性继承正式配置（密钥/提供商免重填），此后读写互不干扰
+            if cfg!(debug_assertions) {
+                let release = path.with_file_name("settings.json");
+                match std::fs::read_to_string(&release) {
+                    Ok(s) => Ok(Some(s)),
+                    Err(e2) if e2.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e2) => Err(format!("读取设置失败: {e2}")),
+                }
+            } else {
+                Ok(None)
+            }
+        }
         Err(e) => Err(format!("读取设置失败: {e}")),
     }
+}
+
+/// 聚焦重载数据源（病例 052）：返回 settings 文件的 mtime（毫秒）与内容。
+/// 文件不存在 → 两字段 null；读取出错 → Err（前端保持内存，不动作）。
+#[tauri::command]
+fn read_settings_state(app: AppHandle) -> Result<Value, String> {
+    let path = settings_path(&app)?;
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({"mtime_ms": null, "content": null}));
+        }
+        Err(e) => return Err(format!("读取设置文件状态失败: {e}")),
+    };
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取设置失败: {e}"))?;
+    Ok(serde_json::json!({"mtime_ms": mtime_ms, "content": content}))
+}
+
+/// 设置载入时 historyDirs 清理的存在性判定（病例 052）：返回仍存在的目录子集。
+#[tauri::command]
+fn existing_dirs(dirs: Vec<String>) -> Vec<String> {
+    dirs.into_iter().filter(|d| Path::new(d).is_dir()).collect()
 }
 
 #[tauri::command]
@@ -302,6 +348,25 @@ fn shell_path(path: &str) -> String {
     path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
 }
 
+/// reveal 行为决策（纯函数，可测）：目录 → explorer 直开该目录；
+/// 文件 → explorer /select 父目录选中（Explorer 无法 /select 目录——
+/// 目标是目录会回落打开「文档」主文件夹，用户实测，病例 057）。
+/// 路径归一化：\\?\ 剥离（shell_path）+ 正斜杠转反斜杠（Explorer 认 \）。
+enum RevealPlan {
+    OpenDir(String),
+    Select(String),
+}
+
+#[cfg(windows)]
+fn reveal_plan(path: &Path) -> RevealPlan {
+    let norm = shell_path(&path.to_string_lossy().replace('/', "\\"));
+    if path.is_dir() {
+        RevealPlan::OpenDir(norm)
+    } else {
+        RevealPlan::Select(norm)
+    }
+}
+
 #[tauri::command]
 fn reveal_in_explorer(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
@@ -309,14 +374,24 @@ fn reveal_in_explorer(path: String) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let mut cmd = std::process::Command::new("explorer");
-        cmd.arg(format!("/select,\"{}\"", shell_path(&path)));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
+        use std::os::windows::process::CommandExt;
+        match reveal_plan(Path::new(&path)) {
+            RevealPlan::OpenDir(dir) => {
+                let mut cmd = std::process::Command::new("explorer.exe");
+                cmd.arg(dir);
+                cmd.spawn().map_err(|e| format!("打开文件夹失败: {e}"))?;
+            }
+            RevealPlan::Select(p) => {
+                // /select 与路径必须分两个 argv 且不引号包裹——
+                // `explorer /select,"<path>"` 单参数带引号形态在本机实测
+                // 对 ASCII/中文路径一律回落打开「文档」主文件夹
+                // （case057 探针 A/C/E 全灭，B/D 两参数形态成功）
+                let mut cmd = std::process::Command::new("explorer");
+                cmd.arg("/select,").arg(p);
+                cmd.creation_flags(0x0800_0000);
+                cmd.spawn().map_err(|e| format!("打开资源管理器失败: {e}"))?;
+            }
         }
-        cmd.spawn().map_err(|e| format!("打开资源管理器失败: {e}"))?;
     }
     #[cfg(not(windows))]
     {
@@ -337,11 +412,20 @@ fn open_path(p: &Path) -> Result<(), String> {
 
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
-    if !Path::new(&path).exists() {
+    let p = Path::new(&path);
+    if !p.exists() {
         return Err("路径不存在".into());
     }
     #[cfg(windows)]
     {
+        if p.is_dir() {
+            // 目录：cmd /c start 实测不弹可见窗口（case055 探针实证，
+            // 进程句柄/标题零变化），改走 explorer.exe 直开
+            let mut cmd = std::process::Command::new("explorer.exe");
+            cmd.arg(shell_path(&path));
+            cmd.spawn().map_err(|e| format!("打开文件夹失败: {e}"))?;
+            return Ok(());
+        }
         let mut cmd = std::process::Command::new("cmd");
         cmd.args(["/c", "start", "", &shell_path(&path)]);
         #[cfg(windows)]
@@ -396,11 +480,11 @@ pub fn run() {
             start_conversion,
             cancel_conversion,
             registry::read_registry,
-            registry::scan_unregistered,
-            registry::relocate_entry,
             registry::remove_entry,
             load_settings,
             save_settings,
+            read_settings_state,
+            existing_dirs,
             test_connection,
             fetch_models,
             check_update,
@@ -412,4 +496,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[cfg(windows)]
+    #[test]
+    fn reveal_plan_dir_opens_directly() {
+        // 目录 → OpenDir（explorer 直开，不再 /select）；正斜杠归一化为反斜杠
+        let dir = std::env::temp_dir().join(format!("bc-reveal-{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let fwd = dir.join("sub").to_string_lossy().replace('\\', "/");
+        match reveal_plan(Path::new(&fwd)) {
+            RevealPlan::OpenDir(p) => {
+                assert!(!p.contains('/'), "应归一化为反斜杠: {p}");
+                assert!(p.ends_with("sub"), "目标目录本身: {p}");
+            }
+            RevealPlan::Select(_) => panic!("目录不应走 /select"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reveal_plan_file_selects_in_parent() {
+        // 文件 → Select（/select 父目录选中）；\\?\ 前缀剥离
+        let dir = std::env::temp_dir().join(format!("bc-reveal-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.epub");
+        fs::write(&f, b"x").unwrap();
+        let pref = format!(r"\\?\{}", f.to_string_lossy());
+        match reveal_plan(Path::new(&pref)) {
+            RevealPlan::Select(p) => {
+                assert!(!p.starts_with(r"\\?\"), "\\\\?\\ 前缀应剥离: {p}");
+                assert!(p.ends_with("a.epub"), "目标是文件本身: {p}");
+            }
+            RevealPlan::OpenDir(_) => panic!("文件不应直开"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

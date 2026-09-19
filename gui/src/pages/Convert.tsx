@@ -348,6 +348,19 @@ export function ConvertPage() {
           </div>
         </Field>
 
+        <details className="py-1 text-xs" style={{ color: "var(--ink2)" }}>
+          <summary className="cursor-pointer select-none">
+            {S.convert.outputLayoutTitle}
+          </summary>
+          <pre
+            className="mono mt-1 overflow-x-auto rounded-md p-2 leading-5"
+            style={{ background: "color-mix(in srgb, var(--ink) 5%, transparent)" }}
+          >
+            {S.convert.outputLayout}
+          </pre>
+          <div className="mt-1">{S.convert.outputLayoutNote}</div>
+        </details>
+
         <Field label={S.convert.formatLabel}>
           <div className="flex gap-1.5">
             {FORMATS.map((f) => {

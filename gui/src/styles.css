@@ -83,15 +83,13 @@ input[type="number"]::-webkit-outer-spin-button {
     border-radius: 10px;
   }
 
-  /* 条目 hover 微浮起 + 主色低透明外发光 */
+  /* 条目 hover 主色低透明外发光（零位移：translateY 会在边界处自激抖动） */
   .lift {
     transition:
-      transform 150ms ease,
       box-shadow 150ms ease,
       border-color 150ms ease;
   }
   .lift:hover {
-    transform: translateY(-1px);
     box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 20%, transparent);
   }
 
@@ -110,13 +108,11 @@ input[type="number"]::-webkit-outer-spin-button {
     transition:
       filter 150ms ease,
       background 150ms ease,
-      transform 150ms ease,
       box-shadow 150ms ease;
     user-select: none;
   }
   .btn:hover:not(:disabled) {
     filter: brightness(0.97);
-    transform: translateY(-1px);
     box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 16%, transparent);
   }
   .btn:disabled {
