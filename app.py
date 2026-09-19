@@ -44,9 +44,14 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("gui")
 
 # PyInstaller 打包（frozen）时：设置文件放 exe 同目录（用户可写）；
-# 源码运行时：放项目根目录
+# macOS 打包后 exe 同目录在 .app bundle 内部，不稳定（移动/重装即丢），
+# 改用 ~/Library/Application Support；源码运行时：放项目根目录
 if getattr(sys, "frozen", False):
-    APP_DIR = Path(sys.executable).parent
+    if sys.platform == "darwin":
+        APP_DIR = Path.home() / "Library" / "Application Support" / "Books_Converter"
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+    else:
+        APP_DIR = Path(sys.executable).parent
 else:
     APP_DIR = Path(__file__).parent
 SETTINGS_PATH = APP_DIR / "gui_settings.json"
