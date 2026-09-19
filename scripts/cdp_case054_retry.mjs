@@ -32,7 +32,7 @@ const fails = [];
 const check = (name, cond, extra = "") => { console.log(`${cond ? "✓" : "✗"} ${name}${extra ? " — " + extra : ""}`); if (!cond) fails.push(name); };
 
 // ── 门禁：落在转换页 + settings 加载完成 ──
-await evalJS(`(async () => { (await import("/src/lib/nav.ts")).navigate({ page: "convert" }); return true; })()`);
+await evalJS(`(async () => { (await import("/src/lib/nav")).navigate({ page: "convert" }); return true; })()`);
 let ready = false;
 for (let i = 0; i < 24 && !ready; i++) {
   await sleep(500);
@@ -41,14 +41,14 @@ for (let i = 0; i < 24 && !ready; i++) {
 if (!ready) { console.log("未落在转换页"); process.exit(1); }
 for (let i = 0; i < 20; i++) {
   await sleep(300);
-  if (await evalJS(`(async () => (await import("/src/lib/settings.ts")).settingsStore.loaded)()`)) break;
+  if (await evalJS(`(async () => (await import("/src/lib/settings")).settingsStore.loaded)()`)) break;
 }
 
 // ── a) 合成失败任务（不存在的 PDF）──
 const BAD_PDF = "D:/no/such/case054-ghost.pdf";
 const setup = await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
-  const s = await import("/src/lib/settings.ts");
+  const q = (await import("/src/lib/queue")).queueStore;
+  const s = await import("/src/lib/settings");
   const opts = { ...s.defaultConvertOptions(), formats: ["epub"] };
   q.add(["${BAD_PDF}"], opts);
   const t = q.tasks[q.tasks.length - 1];
@@ -62,14 +62,14 @@ let st = "";
 for (let i = 0; i < 90; i++) {
   await sleep(1000);
   st = await evalJS(`(async () => {
-    const q = (await import("/src/lib/queue.ts")).queueStore;
+    const q = (await import("/src/lib/queue")).queueStore;
     return q.tasks.find((t) => t.id === "${setup.id}")?.status ?? "gone";
   })()`);
   if (st === "error" || st === "gone") break;
 }
 check("a1 不存在 PDF 的任务转 error", st === "error", `status=${st}`);
 const errInfo = await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
+  const q = (await import("/src/lib/queue")).queueStore;
   const t = q.tasks.find((t) => t.id === "${setup.id}");
   return { error: t?.error ?? "", n: q.tasks.filter((x) => x.pdfPath === "${BAD_PDF}").length };
 })()`);
@@ -97,7 +97,7 @@ await evalJS(`(() => {
 })()`);
 await sleep(600);
 const afterClick = await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
+  const q = (await import("/src/lib/queue")).queueStore;
   const t = q.tasks.find((t) => t.id === "${setup.id}");
   return {
     status: t?.status,
@@ -118,7 +118,7 @@ let st2 = "";
 for (let i = 0; i < 90; i++) {
   await sleep(1000);
   st2 = await evalJS(`(async () => {
-    const q = (await import("/src/lib/queue.ts")).queueStore;
+    const q = (await import("/src/lib/queue")).queueStore;
     return q.tasks.find((t) => t.id === "${setup.id}")?.status ?? "gone";
   })()`);
   if (st2 === "error" || st2 === "gone") break;
@@ -128,7 +128,7 @@ await shot("case054-retried-error.png");
 
 // ── 收尾：清掉合成任务卡片 ──
 await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
+  const q = (await import("/src/lib/queue")).queueStore;
   q.clearFinished();
   return q.tasks.length;
 })()`);

@@ -34,7 +34,7 @@ const fails = [];
 const check = (name, cond, extra = "") => { console.log(`${cond ? "✓" : "✗"} ${name}${extra ? " — " + extra : ""}`); if (!cond) fails.push(name); };
 
 // ── 门禁：转换页 + settings 加载完成 + VLM 已配置 ──
-await evalJS(`(async () => { (await import("/src/lib/nav.ts")).navigate({ page: "convert" }); return true; })()`);
+await evalJS(`(async () => { (await import("/src/lib/nav")).navigate({ page: "convert" }); return true; })()`);
 let ready = false;
 for (let i = 0; i < 24 && !ready; i++) {
   await sleep(500);
@@ -43,13 +43,13 @@ for (let i = 0; i < 24 && !ready; i++) {
 if (!ready) { console.log("未落在转换页"); process.exit(1); }
 for (let i = 0; i < 20; i++) {
   await sleep(300);
-  if (await evalJS(`(async () => (await import("/src/lib/settings.ts")).settingsStore.loaded)()`)) break;
+  if (await evalJS(`(async () => (await import("/src/lib/settings")).settingsStore.loaded)()`)) break;
 }
 
 // ── a) 真跑 smoke.pdf（VLM 缓存秒完）──
 const setup = await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
-  const s = await import("/src/lib/settings.ts");
+  const q = (await import("/src/lib/queue")).queueStore;
+  const s = await import("/src/lib/settings");
   const st = s.settingsStore.settings;
   const opts = { ...s.defaultConvertOptions(), mode: "vlm",
                  vlmModel: st.defaults.vlmModel, outputDir: "${OUT_DIR}",
@@ -65,7 +65,7 @@ let st = "";
 for (let i = 0; i < 300; i++) {
   await sleep(1000);
   st = await evalJS(`(async () => {
-    const q = (await import("/src/lib/queue.ts")).queueStore;
+    const q = (await import("/src/lib/queue")).queueStore;
     const t = q.tasks.find((t) => t.id === "${setup.id}");
     return t ? t.status + "|" + (t.error ?? "") : "gone";
   })()`);
@@ -75,7 +75,7 @@ check("a1 smoke.pdf 转换 done", st.startsWith("done"), st);
 
 // ── b/c) 卡片与 productDir ──
 const cardState = await evalJS(`(async () => {
-  const q = (await import("/src/lib/queue.ts")).queueStore;
+  const q = (await import("/src/lib/queue")).queueStore;
   const t = q.tasks.find((t) => t.id === "${setup.id}");
   const card = [...document.querySelectorAll(".card.lift")].find((c) => c.textContent.includes("smoke"));
   if (!card) return { card: false };
@@ -129,7 +129,7 @@ check("d2 无报错通知/提示", !errToast);
 await shot("case055-after-open.png");
 
 // ── 收尾：清掉 done 卡片 ──
-await evalJS(`(async () => { (await import("/src/lib/queue.ts")).queueStore.clearFinished(); return true; })()`);
+await evalJS(`(async () => { (await import("/src/lib/queue")).queueStore.clearFinished(); return true; })()`);
 await sleep(400);
 
 console.log(fails.length ? `FAIL ${fails.length}: ${fails.join(" / ")}` : "ALL PASS");

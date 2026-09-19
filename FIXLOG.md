@@ -1997,3 +1997,38 @@
   同目录复开只聚焦不新增窗口；脚本开场先清残留 Explorer 文件夹窗口。）
 - **状态**：已修复并验证（dev 实例已全量重启，含 Rust 重编译；不打包，
   发布期另按 wiki/05 走）。wiki/08 详情页按钮段已同步。
+
+## 病例 058｜检查更新路线审计与补全 + 仓库大扫除（README/Release Notes 重写）
+
+- **审计结论**：更新路线本就基本完整——updater.py 打 GitHub API
+  `releases/latest`（Feplus2/Books_Converter，与 git remote 一致），
+  tag 数值元组比对，url=该 release html_url（回退 releases 列表页）；
+  前端三态内联消息 + toast，「下载地址」经 open_url（仅放行 http/https）。
+  **缺口**：检查失败时无任何手动出口（GitHub 不通只能干瞪眼）、update
+  态 url 解析缺失时按钮消失、「下载地址」文案语义弱。
+- **修补点**（纯前端，Rust/pipeline 不动）：
+  - gui/src/lib/updater.ts（新）：`updateResultToMsg` 纯函数——三态消息
+    恒带 Releases 链接（成功=直达 tag 页；latest/failed/url 缺失=列表页；
+    失败方向=如实提示+给手动出口）+ `RELEASES_URL` 常量。
+  - Settings.tsx checkUpdate 改走该纯函数；strings.ts updateDownload
+    「下载地址」→「前往 Releases 下载」。
+- **CDP E2E 教训（vite 模块孤儿实例）**：dev 实例 HMR 后，动态
+  `import("/src/lib/queue.ts")` 会拿到与 App 不同的模块实例（App 的实例
+  在 `?t=<ts>` 版本化 URL 上）——E2E 注入的队列任务不渲染。另：直接
+  `element.remove()`  React 管理的 toast 节点会 removeChild 崩掉整树。
+  规则：CDP 脚本一律从 `performance.getEntriesByType("resource")` 解析
+  页面真实模块 URL 再 import；绝不手删 React 管理的 DOM。
+  scripts/cdp_case{054,055,057,058}_*.mjs 的 import 路径已同步修正。
+- **大扫除**：049–058 全部产物分 4 个主题 commit 落库（管线后端 /
+  GUI 前后端 / E2E 脚本 / FIXLOG+wiki+AGENTS）；.gitignore 防线抽查
+  （.env/gui_settings.json/_regress/_batch_logs/output/dist/target 等
+  全部正确排除）。未 push、未打 tag、version.py 未动。
+- **文书**：README.md 全量重写（新架构三引擎/产物契约/GUI 配图
+  docs/images/{convert,library}.png/安装使用/质量文化）；
+  RELEASE_NOTES.md 新建，v1.4.0 草稿节（未发布）。
+- **回归**：GUI vitest 82/82（新增 case058-update 4 例：三态+url 兜底）；
+  pnpm build 绿；cargo test 6/6（本轮 Rust 未动）；Python 侧未动。
+  CDP 实测：设置页点「检查更新」真打 GitHub 返回「当前已是最新版本」，
+  「前往 Releases 下载」按钮在场。截图 _regress/case058-{settings-before,
+  settings-update,about-section}.png。
+- **状态**：已完成并验证（dev 实例 1520/9224 存活，前端经 vite HMR 自取）。

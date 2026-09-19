@@ -52,7 +52,7 @@ execSync(
 await sleep(1200);
 
 // ── 门禁：进产物库 ──
-await evalJS(`(async () => { (await import("/src/lib/nav.ts")).navigate({ page: "library" }); return true; })()`);
+await evalJS(`(async () => { (await import("/src/lib/nav")).navigate({ page: "library" }); return true; })()`);
 let ready = false;
 for (let i = 0; i < 24 && !ready; i++) {
   await sleep(500);
@@ -61,7 +61,7 @@ for (let i = 0; i < 24 && !ready; i++) {
 if (!ready) { console.log("未落在产物库"); process.exit(1); }
 for (let i = 0; i < 20; i++) {
   await sleep(300);
-  if (await evalJS(`(async () => (await import("/src/lib/settings.ts")).settingsStore.loaded)()`)) break;
+  if (await evalJS(`(async () => (await import("/src/lib/settings")).settingsStore.loaded)()`)) break;
 }
 await sleep(1200);
 

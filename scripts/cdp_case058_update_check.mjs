@@ -23,7 +23,7 @@ const shot = async (name) => {
 await call("Page.enable", {});
 
 // 设置页 → 滚到「关于」组（检查更新按钮所在）
-await evalJS(`(async () => { (await import("/src/lib/nav.ts")).navigate({ page: "settings", section: "options" }); return true; })()`);
+await evalJS(`(async () => { (await import("/src/lib/nav")).navigate({ page: "settings", section: "options" }); return true; })()`);
 await sleep(1200);
 await evalJS(`(() => {
   const el = [...document.querySelectorAll("*")].find((e) => e.textContent?.trim() === "Books Converter" && e.children.length === 0);

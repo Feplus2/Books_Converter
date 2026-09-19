@@ -5,6 +5,10 @@
 `version.py` 的 `__version__` 是唯一版本源（GUI 与 CLI 共用）。
 改动发版级别修复时递增。
 
+发布稿文案：用户向 changelog 写在仓库根 `RELEASE_NOTES.md`（顶部加
+新一节；草稿节标「未发布」），README.md 的功能/截图随版本同步更新
+（配图在 `docs/images/`，相对路径引用）。
+
 ## PyInstaller 打包
 
 ```bash
