@@ -1526,3 +1526,474 @@
   Paddle 版 FG/izuno 全部导入 dev 实例打「规则」标签（VLM 版在先
   已齐），向量化排队中。
 - **状态**：已修复并验证。
+
+## 病例 048｜Tauri GUI 队列快照 + 分章 md 图片链接 — 点「开始」假死 / 章节图全挂
+
+- **现象 A**：GUI 点「开始转换」界面零反应——状态永远「待开始」、无进度条，
+  但后台实际跑完全程并产出 EPUB。
+- **根因 A**：QueueStore 快照引用永不变——任务对象原地 mutate、`getTasks`
+  返回同一数组引用，`useSyncExternalStore` 以 `Object.is` 判定无变化跳过
+  重渲染；precheck/pump/事件链全部正常，纯渲染断链。GUI 初建（b30716f）
+  即存在的原生缺陷。**修复已进 HEAD（5e6e34d）：emit 时
+  `this.snapshot = this.tasks.slice()` 换新引用（gui/src/lib/queue.ts）。
+  但 gui/dist 与该时期打包产物均早于修复提交，跑旧构建必复现
+  → 须重新构建前端 / 重打应用方送达用户。** 另：该修复被混进标题只讲
+  md 图片的提交，message 与 FIXLOG 均未提，本病例补登记。
+- **现象 B**：分章 md 打开图片全挂——章节文件在 `chapters/` 子目录，img
+  src 沿用包级 `images/…` 写法，相对章节文件解析落空。
+- **根因 B**：HTML parts 的 `<img src="images/…">` 按 EPUB 内部布局生成
+  （stage3_epub.py），md 导出原样照搬 src，未考虑分章形态下章节沉在
+  `chapters/`。
+- **修补 B**（stage3_export.py）：`render_unit_md` 增 `img_prefix` 参数，
+  分章循环传 `"../"`，index.md 包级不加；`_deliver` 平铺进 `md/` 后
+  `../images/` 亦恰好命中 `md/images/`，两种布局同前缀双正确。
+- **回归**：tests/test_stage3_export.py 分章图片前缀用例；秦汉史讲义产物
+  原地重建验证。**遗留**：该书交付区 `md/` 仍是修复前断链残留（当时验证
+  只刷了 `秦汉史讲义_md/` 原始导出、未走 `_deliver`），复用缓存重跑一次
+  或手工把 `秦汉史讲义_md/` 刷入 `md/` 即愈。
+- **状态**：代码已修复；待重打 GUI 产物送达用户。
+
+## 病例 049｜交付后根级重复清理 + GUI 产物架构说明 — work_dir 兼任交付根的双份产物
+
+- **现象**：每本书目录里根级原始导出（`<书名>.epub/.tex`、`<书名>_md/`、
+  根级 `images/`、`cover.jpg`）与 `_deliver` 复制进 `epub/ md/ tex/` 的
+  交付副本字节相同 → 同一份产物存两份，目录噪音大（秦汉史讲义实测：
+  16MB EPUB 双份）。
+- **根因**：work_dir 兼任缓存根与交付根，stage3 把原始导出写进根级，
+  `_deliver` 复制（非移动）进格式子目录，根级原件无人回收。
+- **修补**（pipeline.py）：
+  - `_cleanup_root_exports`（新）：全部格式交付成功后删除根级重复——
+    本轮产出的 epub/tex/md 原始导出路径 + 根级 `images/` + `cover.jpg`。
+    安全性先证后删：根级 `images/` 由 stage3_export._copy_images 从
+    `<engine>/images` 现复制（重跑缓存复用时同路径，无人拿它当输入）、
+    `cover.jpg` 由 stage3_epub._extract_cover_image 每次从 PDF 首页
+    现渲染、epub/tex/md 由 stage3 现写——缓存复跑全链路不依赖根级文件；
+  - 失败方向 = 不动作（铁律 0）：任一格式导出/交付失败（deliver_ok=False）
+    直接不清理；只删 work_dir 直系子项（防路径异常误伤他处）；
+    单项删除失败仅告警；
+  - GUI（gui/src/pages/Convert.tsx + gui/src/lib/strings.ts）：输出目录
+    下新增「产物目录长这样」折叠说明（交付三件套 + 缓存布局 +
+    「中间产物自动清理」一句）。
+- **回归**：tests/test_pipeline_deliver_cleanup.py 新增 6 例（清理发生 /
+  交付失败不清理 / 缓存与用户文件不动 / 非直系路径不删 / 单项失败不
+  中止）；全套单测绿（test_structure_rescue 65 过、test_stage2_toc
+  64/64、test_stage2_vlm 11/11、test_stage3_* / test_stage1_* /
+  test_raster_snap / test_llm_thinking / test_pipeline_registry 全 OK；
+  GUI vitest 40/40、pnpm build 通过）；秦汉史讲义（秦晖）缓存复跑
+  （--engine vlm --skip-mineru --skip-deepseek --format epub,md,tex
+  --md-split）：目录终态 = epub/ md/ tex/ vlm/ + structure.json +
+  popo_blocks.json，根级重复清零；md/chapters 图片引用 `../images/`
+  命中（病例 048 遗留的断链 md/ 一并刷新即愈）；EPUB nav 54 条目
+  层级正确、53 图在包；换引擎前的孤儿 mineru/ 经用户同意一并删除。
+  GUI 冒烟：dev 实例 CDP 全回路（smoke.pdf 入队 → 点开始 → queued→
+  running→done，2 页缓存 10s 跑完，撞名避让 + 清理均按预期）；release
+  新构建 CDP 截图验证「产物目录长这样」渲染（_regress/
+  case049-release-convert.png）。
+  **挂账**：qc_book 报 1 个 orphan 标题（p117「第二章 周秦之变：」
+  无目录条目）——structure.json/popo_blocks.json 时间戳未变（Stage 2
+  缓存复用），属该书既有结构数据问题，与本次清理无关，留待结构侧排查。
+- **状态**：已修复并验证。
+
+## 病例 050｜显示层/参数层诚实化批次 — 引擎名硬编码 hybrid / 再次转换引擎不可见 / 悬停自激抖动 / 进度估算偏快与三等分点误导
+
+- **现象**（四连，均为显示/参数层，不动转换语义）：
+  1. headless start 事件 engine 恒为 "hybrid"（pipeline.py 硬编码），GUI 队列
+     日志与协议消费方拿到的引擎名是假的；
+  2. 「OCR: 强制/自动」日志行对所有引擎打印，但该旗标只有 MinerU 真消费
+     （paddleocr/vlm 的 parse() 签名接收但忽略）——VLM 模式下日志谎称读了开关；
+  3. 队列卡片无引擎显示，「再次转换」按原选项快照入队但用户看不见用的是
+     哪个引擎；
+  4. `.lift:hover`/`.btn:hover` 的 `translateY(-1px)` 在边界处自激振荡
+     （hover 位移 → 元素脱离指针 → hover 解除 → 回位 → 再 hover）；
+  5. 进度条刻度点按阶段数等分（3 阶段→33/66/100），与按预估耗时加权的
+     真实阶段跨度不符；MinerU est_s1 按 0.80 s/页（云端健康日口径）偏快约
+     2 倍，真实含排队轮询 ≈ 2.0 s/页；headless 爬行固定 0.8%/s 与阶段预估
+     无关；detail 字段只进折叠日志，旧 GUI 的常显详情行（「VLM 阅读
+     120/549 页」）在新 GUI 缺失。
+- **修补**：
+  - pipeline.py：`_ocr_log_line`（新）——OCR 行仅 mineru 打印强制/自动，
+    其他引擎明示「OCR: 不适用（<引擎显示名> 逐页视觉解析）」；
+    `_estimate_stage_seconds`（新，抽出便于单测）——MinerU est_s1 收窄为
+    2.0 s/页（注释注明实测口径；VLM/Paddle 不动）；HeadlessProgress 与
+    ProgressWindow 的 engine 参数改传真实引擎。
+  - progress_headless.py：爬行改按阶段预估时长配速（爬速 = 跨度×90%/est 秒；
+    预估缺失/非法回落旧固定爬速，铁律 0）；仅本阶段无真实 fraction 时爬行，
+    真实 fraction 到达后显示值向真实值缓动逼近（单调不跳变）；start 事件
+    新增 stage_bounds（按预估加权的阶段边界累计百分比）。
+  - progress_ui.py：engine 真实化后阶段卡片映射补 vlm 分支（VLM-Structure）。
+  - GUI：protocol.ts start 事件补 stage_bounds；queue.ts 任务快照加
+    stageBounds/detail；QueueItem 卡片加引擎徽章（engineOf+engineName）与
+    常显详情行（事件 detail 字段）；ProgressBar 按 stage_bounds 画刻度点，
+    无边界数据不画（不动作）；strings.ts 新增 engineName 映射（ProductCard
+    本地 ENGINE_LABEL 收编共用），logStart 与 reconvert toast 带显示名；
+    styles.css 去掉 .lift:hover/.btn:hover 的 translateY（保留光晕）。
+- **回归**：tests/test_progress_headless.py（7 例：配速/回落/封顶/真实
+  fraction 优先不跳变/换阶段恢复爬行/start 事件 engine 与边界）+
+  tests/test_pipeline_progress.py（7 例：start 接线 engine≠hybrid×3 引擎、
+  OCR 行按引擎、MinerU 2.0 s/页）；全 Python 链 20 文件绿；GUI vitest
+  45/45（新增 progress.test.ts 5 例）、pnpm build 过。
+  E2E（scripts/cdp_case050_dev_loop.mjs，dev 实例 CDP 9224）：队列卡片
+  VLM/MinerU 徽章 ✓；smoke.pdf（vlm 缓存）实跑——日志「解析引擎: vlm /
+  OCR: 不适用（VLM 逐页视觉解析）」、logStart「引擎 VLM」、stageBounds
+  [62.5, 93.8, 100] 非三等分、详情行随进度更新 ✓；「再次转换」toast
+  「已按原选项（VLM）加入队列」✓；截图 _regress/case050-{badges,running,
+  done,reconvert-toast}.png 亲读确认。
+- **挂账**：① VLM/LLM 直读文字层（文字版 PDF 不走视觉管线）——未做过的
+  专题，待立项；②「再次转换」语义（锁定原选项快照 vs 跟随当前设置）——
+  本病例只做可见性（徽章+toast），语义留待用户定夺。
+  **归因修正（2026-09-20）**：本病例曾把用户复现的「拖放吃到旧选项」归入
+  「再次转换」快照语义——该归因被用户复现证伪，真根因为 dev/正式多实例
+  共用同一份 settings.json + settingsStore 内存单例分叉（最后写入者胜），
+  详见病例 052。
+- **状态**：已修复并验证（dev 实例已重启加载全部改动；不打包，发布期另按
+  wiki/05 走）。
+
+## 病例 051｜全 GUI 悬停审计 — 050 单点教训通则化（动效铁则 + 静态守卫 + CDP 命中矩形断言）
+
+- **现象**：050 修掉 `.lift:hover`/`.btn:hover` 的 `translateY(-1px)` 自激抖动后，
+  用户要求全 GUI 排查同类「动画引起版面激荡」——凡 hover/状态变化触发
+  ①位移（命中区域逃离光标）②布局属性变化（顶开兄弟元素）③条件渲染
+  新节点撑版面 的，一律改写为「视觉反馈保留、版面零位移」。
+- **审计**（styles.css 全量 + tsx 全部 hover:/group-hover:/transition/animate-/
+  scale/translate/max-h/w-0 模式 + JS onMouseEnter 钩子）：
+  - styles.css:92 `.lift:hover` / :114 `.btn:hover` / :127 `.btn-primary:hover` /
+    :134 `.btn-ghost:hover` / :154 `.icon-btn:hover` / :183 `.input:focus` ——
+    均为 box-shadow/filter/background/color/border-color，合规（050 已修尽）；
+  - styles.css:193 `page-in`（translateY 6px 一次性入场；消费方 .page-enter
+    不联动 hover，Select 面板/Tooltip 均为 fixed 覆盖层，无反馈回路）、
+    :208 `queue-flash`（box-shadow 脉冲）、:234 `.progress-fill`（数据驱动
+    宽度）——保留；
+  - App.tsx:50 导航项 `transition-all`（无 hover 样式，折叠为点击驱动）、
+    :186 侧栏 `transition-[width]`（点击驱动）；
+  - ProductCard.tsx:39 `group-hover:opacity-100`（absolute 覆盖层动作钮，
+    只动 opacity）；Select.tsx:88 箭头 rotate（点击）/ :101 fixed 面板 /
+    :112+:119 选项 JS hover 仅改 background/boxShadow；
+  - Toggle.tsx:29 滑块 translateX（点击驱动 + 轨道内绝对定位）；
+    Tooltip.tsx fixed + pointer-events-none；ProgressBar.tsx:26 与
+    Library.tsx:160 静态居中 translate（无过渡不参与动画）；
+  - QueueItem.tsx:135 展开日志、Convert.tsx:351 details/summary ——
+    点击驱动条件渲染，不在禁列。
+  **结论：050 之后全库无新增违例，本轮零 app 运行时代码改动。**
+- **修补**（通则化与守卫，不含 app 行为变更）：
+  - wiki/08 §3 新增「动效铁则」（050 单点 → 通则）：状态样式只许动自身
+    视觉（允许/禁止属性清单 + 覆盖层/一次性入场动画豁免 + scale≤1.03
+    微放大许可——放大命中区域不会自激）；
+  - 新增守卫 `gui/src/lib/__tests__/styles-no-layout-thrash.test.ts`（4 例）：
+    styles.css 状态伪类块禁属性黑名单 + 视觉属性白名单 + tsx 状态 variant
+    布局工具类黑名单，各带 sanity 断言防解析静默失效。实现注：vitest
+    默认把 .css import 吞成空串（?raw/?inline 均失效），css 走 node:fs
+    读文件；为此新增 devDependency @types/node（仅类型，运行时零影响）。
+- **回归**：GUI vitest 49/49（含新守卫 4 例）、`pnpm build`（tsc+vite）绿；
+  E2E `scripts/cdp_case051_hover_audit.mjs`（dev 实例 CDP 9224，真实鼠标
+  Input.dispatchMouseEvent）：服役 CSS 状态规则零禁属性 ✓；拖放区
+  （.lift 首元素）/队列卡片展开钮（.icon-btn）/「选择目录」（.btn）/
+  导航折叠键/导航项 悬停前后 getBoundingClientRect 逐像素一致 ✓；
+  悬停光晕确实生效（box-shadow 非 none）✓；050 复现几何（卡片下边缘内
+  1px 悬停 500ms 采样 5 次）矩形零抖动 ✓；产物库卡片 group-hover 动作钮
+  opacity=1 显现且卡片矩形不变 ✓。截图 _regress/case051-{convert-hover,
+  queue-card-hover,queue-edge-hover,nav-before,nav-hover,
+  library-card-hover}.png 亲读确认。（插曲：脚本第二跑遭遇活窗口状态
+  flake——前一跑结束在产物库页，叠加 pnpm add 后 vite 依赖重优化，断言
+  打在错误页面上；已加「reload 后必须落在转换页」门禁，其后稳定 ALL PASS。）
+- **挂账**：MinerU 4.0 多格式 + 官方 API 开放 → 规则模式原生多格式输入
+  （情报来源：用户转述官方动向；已落档 wiki/07 前景挂账，待其 API 落地、
+  用户拍板后立项；与 050 挂账的「VLM/LLM 直读文字层」是两条独立线——
+  一个是规则模式输入面，一个是 VLM 模式文字层捷径）。
+- **状态**：审计完成，通则与守卫落地并验证（本轮无 app 运行时代码变更，
+  dev 实例 1520 所跑即当前源码，CDP reload 复测确认；不打包，发布期另按
+  wiki/05 走）。
+
+## 病例 052｜GUI 多实例与产物库批次 — 配置分叉+聚焦重载+起跑汇总 / 扫描污染去污 / 删除记录与忽略名单
+
+- **现象**（三连，均为 GUI/壳层，管线一行不动）：
+  1. dev 与正式实例共用同一 identifier（com.booksconverter.app）→ 同一份
+     settings.json；settingsStore 是启动时 load 一次的内存单例，无文件监视/
+     跨实例同步，保存整对象最后写入者胜——多实例并存时拖放吃到另一实例的
+     旧内存（050 挂账②的「再次转换」归因被用户复现证伪，真根因在此）；
+     入队即快照选项，但起跑前用户看不见将用哪个引擎；
+  2. 产物库 knownDirs = outputDir+scanDirs+historyDirs 全部并行喂
+     read_registry + scan_unregistered：用户 outputDir=D:\temp_files 是通用
+     临时目录 → 本机自有文档全被扫进「未登记」；queue.ts 每次 done 都
+     addHistoryDir → dev 冒烟的 _regress\smoke-out 持久化进共享配置污染
+     产物库；
+  3. 已登记记录删除只在详情页有入口；未登记条目无移除入口；
+     relocate_entry 用 serde 重序列化会丢 RegistryEntry 未声明字段（如
+     pipeline.py 写的 dir_name）。
+- **修补**：
+  - 配置分叉（gui/src-tauri/src/lib.rs）：settings_path debug 构建
+    （tauri dev）落 settings.dev.json、release 落 settings.json；
+    load_settings 在 dev 文件缺失时一次性继承正式配置（密钥/提供商免重填），
+    此后读写互不干扰。
+  - 聚焦重载：新 command read_settings_state（mtime+内容）与 existing_dirs；
+    settings.ts SettingsStore 记录 lastSyncedJson/fileMtimeMs/lastWriteAt，
+    App.tsx window focus → reloadIfChanged()——mtime 相同/自己刚写/内容一致
+    均不动；内容变才 migrate 替换；解析失败/读取失败保持内存（铁律 0）。
+  - 起跑汇总：queue.ts startAll 预检段后 toast「即将开始 N 个任务：
+    MinerU×1、VLM×1」（纯函数 start-summary.ts 抽出供 vitest）。
+  - 去污：Library.tsx 登记读取仍走 outputDir+scanDirs+historyDirs
+    （read_registry），未登记扫描只喂用户显式 scanDirs（scan_unregistered 加
+    exclude 参数）；settings.ts addHistoryDir 拒绝仓库内暂存区
+    （isRepoInternalDir：books_converter 段锚定 + _regress/output/.tmp-*
+    名单，判不准=放行只少清理）；load 时 historyDirs 剔除仓库内+已不存在
+    目录（内存生效，下次保存落盘）。
+  - 删除语义：Library.tsx 卡片级「删除记录」（RemoveEntryButton 两段确认，
+    文案「只删登记记录，不删产物文件」），详情页入口保留同文案；未登记卡片
+    加「不再显示」（EyeOff）→ settings.ignoredPaths（新字段），扫描经
+    exclude 过滤；产物库页「已忽略」chips 可逐个恢复。
+  - 并发加固（registry.rs）：remove_entry 写回前重读 mtime，读改写窗口被
+    动过则重读重试一次，仍冲突报错不动作；RegistryEntry 加
+    #[serde(flatten)] extra 防 relocate 重序列化丢字段。
+- **回归**：GUI vitest 62/62（新增 case052-settings.test.ts 13 例：
+  isRepoInternalDir/prune/migrate ignoredPaths/startSummaryText/聚焦重载
+  五态/addHistoryDir 守卫/ignore 增删）；src-tauri cargo test 5/5（新增
+  registry.rs 首个 #[cfg(test)] 模块：remove 保留坏行与未命中报错/relocate
+  extra 往返/scan exclude+registry 跳过/norm_path 归一）；pnpm build
+  （tsc+vite）绿。
+  E2E（scripts/cdp_case052_settings_library.mjs，dev 实例 CDP 9224，
+  28/28 ALL PASS）：dev 写 settings.dev.json 且 release settings.json
+  哈希全程不变 ✓；dev 首跑继承正式配置 ✓；historyDirs 剔除 smoke-out、
+  产物库无 temp_files 未登记文档 ✓；外部改写+focus 重载、坏 JSON 保持
+  内存 ✓；「不再显示」消失+reload 不复现+chips 恢复 ✓；卡片删除记录后
+  ts 消失且产物文件原地不动 ✓；startAll toast 引擎汇总 ✓；addHistoryDir
+  拒绝仓库路径 ✓。截图 _regress/case052-{library-clean,unregistered,
+  ignored,regcard-hover,regcard-confirm,startall-toast}.png 亲读确认。
+- **挂账**：正式实例（release 1.3.9 及以前）里的既有污染（historyDirs
+  smoke-out 等）要等下一次发布包加载新代码后由 prune 自动清理；本轮不打包，
+  未手改 %APPDATA% 正式配置。未登记条目详情页暂无「不再显示」入口（卡片
+  已有，够用；需要时再补）。
+- **状态**：已修复并验证（dev 实例已重启加载全部改动；不打包，发布期另按
+  wiki/05 走）。
+
+## 病例 053｜产物库纯登记制 — 产品决策（非缺陷）：移除未登记扫描/忽略名单/重新定位
+
+- **决策**（2026-09-19 用户拍板）：「把已经更改路径的旧产物目录扫描进来」
+  功能鸡肋、易误判（052 的 temp_files 污染事件即明证），**直接去除**。
+  原则：宁缺毋滥——产物库只记录转换器转换结束时登记的那一次路径；用户
+  手动删了或挪了位置，是用户自己的行为，工具不负责追踪（显示「丢失」
+  徽标即可，该既有行为保留）。
+- **移除点**（全链，GUI/Rust 两侧）：
+  - registry.rs：`scan_unregistered` command（连同 UnregisteredItem 结构、
+    norm_path 归一化、深度 4 层目录遍历）；`relocate_entry` command
+    （服务的正是「用户挪了路径帮找回」流程，与本决策直接冲突）；
+    read_registry 里只写不读的 seen_files 残骸一并清掉。
+    read_registry/remove_entry 保留（登记制唯一数据来源 + 删除记录）；
+    RegistryEntry 的 #[serde(flatten)] extra 保留（无害且防丢字段）。
+  - lib.rs：两个 command 注册同步移除。
+  - settings.ts：Settings.scanDirs/ignoredPaths 字段、ignorePath/
+    unignorePath 方法移除；migrate 对旧配置里已持久化的这两个字段静默
+    丢弃（加载不炸、下次保存落盘即清；不加 deny 校验也不报错）。
+  - Library.tsx：「未登记」区块（卡片+详情+EyeOff「不再显示」）、
+    「已忽略」chips、「扫描目录」chips 与添加按钮、详情页「重新定位」
+    按钮全部移除；knownDirs 组装简化为纯函数 registryDirsOf(settings)
+    = outputDir + historyDirs（新落在 lib/registry.ts，供 vitest 断言）。
+  - strings.ts：扫描/忽略/relocate 相关文案 14 键（addScanDir/
+    addScanDirTooltip/scanDirs/badgeUnregistered/unregisteredHint/
+    relocate/relocateTooltip/toastRelocated/ignoreTooltip/ignoredPaths/
+    toastIgnored/toastUnignored，及随区块死亡 refresh/detailTitle/
+    size/path/remove）。
+- **保留**：删除记录（卡片级+详情页两段确认，052）；「丢失」徽标
+  （read_registry 存在性校验照常）；addHistoryDir 仓库内路径排除与
+  historyDirs pruning（052）；historyDirs 本身（读的是我们自己写的登记
+  文件，与扫描不同）；existing_dirs command（pruneHistoryDirs 仍在用，
+  非死代码）；queue.ts 完成时 addHistoryDir（登记数据的唯一入口）。
+- **回归**：GUI vitest 66/66（case052-settings.test.ts 删扫描/ignore
+  3 例；新增 case053-registry-only.test.ts 6 例：registryDirsOf 纯登记
+  组装/schema 无旧字段/migrate 静默丢弃且落盘不带）；src-tauri cargo
+  test 4/4（删 scan/relocate/norm_path 3 例，新增 extra 往返不丢字段 +
+  read_registry 纯登记制断言）；pnpm build（tsc+vite）绿；cargo check
+  零警告。
+  E2E（scripts/cdp_case053_registry_only.mjs，杀旧起新后的 dev 实例
+  CDP 9224，25/25 ALL PASS）：scan_unregistered/relocate_entry invoke
+  报 not found ✓；read_registry 只回登记行（同目录 stray epub 不可见）✓；
+  产物库无「未登记」/「已忽略」/「扫描目录」任何痕迹、全部卡片均为
+  登记卡 ✓；D:\temp_files 42 个本机 epub/md/tex 零泄漏 ✓；合成丢失
+  记录正常显示「丢失」徽标、详情页无「重新定位」✓；删除记录两段确认后
+  registry 行删、产物文件原地不动 ✓；外部写入含 scanDirs/ignoredPaths
+  的旧配置 + focus 重载不炸、内存已剔除 ✓。截图
+  _regress/case053-{library-clean,registry-only,detail-missing,
+  remove-confirm,after-remove,final}.png 亲读确认。
+- **状态**：已完成并验证（dev 实例已杀旧起新、加载全部改动；不打包，
+  发布期另按 wiki/05 走）。wiki/08 §4 已改写为纯登记制语义；wiki/07
+  「产物列表数据来源」待明确项就此终结。
+
+## 病例 054｜秦汉史讲义 / MinerU — run_tag 作用域崩溃（047 回归）+ 误导性错误提示 + 队列重试 + 失败提示音
+
+- **现象**（用户 2026-09-20 实测）：秦汉史讲义（90.1MB / 523 页，切 3 片）
+  Stage 1 全部解析成功、合并 349,100 字符落盘后，报 Stage 1 失败：
+  `name 'run_tag' is not defined`。
+- **根因链**：047 给切片文件名加进程号时，`run_tag` 定义在
+  `_split_pdf_chunks` 局部作用域（stage1_mineru.py:101），而 `run_mineru`
+  的 finally 清理块（:326）引用了它——run_mineru 作用域里没有这个名字。
+  小书不建 `_chunks/` 目录不触发；**任何切片大书走到 finally 必炸**，
+  即使解析成功、缓存已落盘也报失败。且旧失败提示「请检查: ① 网络连接
+  ② API Token ③ PDF 是否损坏」对代码 bug 是误导，用户会空查环境。
+- **修补点**：
+  - stage1_mineru.py：`run_tag = f"{os.getpid():x}"` 提升到 `run_mineru`
+    顶层（finally 与切片共用同一标识，047「只清本进程切片」语义保持）；
+    `_split_pdf_chunks` 加可选参数 `run_tag=None`（默认内部自生成，
+    单测直连兼容）；顺手删除 :314-318 不可达的重复 return 死代码。
+  - pipeline.py：Stage 1 失败提示分两类——`_is_env_error` 判环境类
+    （网络/配额/云端：异常类型名/模块名命中 + mineru 重试包装 RuntimeError）
+    才走运维清单；**意料外异常改报「疑似程序 bug，请附完整日志反馈」+
+    traceback 末 3 帧摘要**（拿不准一律按 bug 报，失败方向=宁可误惊动
+    反馈，不误导用户空查环境）。
+  - completion_sound.py：按现有模式加 `play_failure_sound()`（素材
+    Kenney minimize_008.ogg，经 .venv 自带 soundfile 转 16-bit PCM
+    `assets/fail.wav`；`CONVERT_FAIL_SOUND=off` 可关；任何异常静默跳过，
+    绝不影响退出码）。接线点（镜像完成音）：pipeline.py PDF 不存在早退 /
+    主 try 的 `except SystemExit`（非零码）/ `except Exception` 三处；
+    旧 tkinter app.py 的 `book_error` / `fatal` 两处同步。
+    KeyboardInterrupt（用户取消）不响。
+  - GUI 队列「重试」按钮：QueueItem 对 status=error/cancelled 显示
+    RotateCcw icon-btn；`queueStore.retry(id)` 就地重置任务为 queued
+    （不新建卡片、入队选项快照原样保留、错误/进度/退出码清零）→ 走
+    startAll 标准路径（052 预检/输出目录兜底/引擎汇总照旧生效，预检
+    不过重新置 error）；toast「已重新入队」可见反馈。文案进 strings.ts
+    （retry/retryTooltip/toastRetry/logRetry）。
+  - 连带发现的存量 bug（本病例回归时暴露，一并修复）：stage3_export.py
+    `build_units` 的引擎缓存回退循环只查 `is_dir()`——工作目录残留空壳
+    `vlm/`（只有 vlm_state.db）时会抢走缓存位，空 content_list 让
+    `_body_range` 塌空 → **md/tex 导出只剩前后页**（EPUB 走内存数据
+    不受影响）。修复：空壳目录（无 content_list 且无 md）跳过继续找。
+- **回归**：
+  - tests/test_stage1_mineru_chunk.py +3 例（RunMineruCleanupTest：mock
+    MinerU 强制切片路径，断言 finally 不炸/返回 dict 正常/缓存落盘、
+    他进程 run_tag 残留切片绝不动、中途崩溃 finally 照常清理且不二次炸）；
+  - tests/test_completion_sound.py（新）7 例：失败音文件缺失/off/
+    winsound 抛错全静默；pipeline 三处失败接线 mock 断言触发、完成音
+    不响；Stage 1 环境类异常走运维清单、NameError 走「疑似程序 bug」
+    分类断言；
+  - tests/test_stage3_export.py +1 例（空壳引擎目录跳过，build_units
+    正文单元不丢）；test_stage3_export 27/27；
+  - AGENTS.md 强制链全部 Python 测试绿（含 structure_rescue 65 过 0 挂、
+    stage4_translate 7 过 0 挂）；GUI vitest 71/71（新增
+    case054-retry.test.ts 5 例：error/cancelled 重试流转、052 预检兼容、
+    非终态 no-op、未知 id no-op）；pnpm build（tsc+vite）绿。
+  - 真书回归：秦汉史讲义 `--engine mineru --skip-mineru` 缓存复用
+    （348,624 字符 / 3612 blocks）全管线 exit 0：EPUB 6880KB（8 章，
+    nav 49 条两级嵌套亲读：自序/绪论+4 节/七章各节/余论/版权页）、
+    md 382,182 字符、tex 406,518 字符（均含全部七章）、049 根级清理
+    正常；qc_book 全绿（🟢 522 页、anchor_hit 47/47、missing_real 0、
+    合成/重复/孤儿标题 0、空章 0、脚注 775）。
+  - E2E（scripts/cdp_case054_retry.mjs，重启后的 dev 实例 CDP 9224，
+    11/11 ALL PASS）：不存在 PDF 合成失败任务 → 卡片置 error、错误文案
+    人话化 ✓；「重试」icon-btn 出现 ✓；点击 → toast「已重新入队」+
+    状态回 queued → pump 接力重跑 → 再次 error（真重跑非假翻转）✓；
+    全程单卡片不新建 ✓。截图 _regress/case054-{error-card,
+    retry-button,retried-running,retried-error}.png 亲读确认。
+- **状态**：已修复并验证（dev 实例已杀旧起新、加载全部改动；sidecar
+  跑仓库根 .venv + pipeline.py 最新源码；不打包，发布期另按 wiki/05 走）。
+  wiki/08 提示音段与队列语义已同步。
+
+## 病例 055｜队列卡片 — done 按钮语义：打开 EPUB → 打开文件夹（用户裁定）
+
+- **决策**（2026-09-20 用户拍板）：done 卡片按钮从「打开 EPUB」改为
+  「打开文件夹」——打开该书产物文件夹（<输出目录>/<书名>/，内含 epub/
+  md/ tex/ 子目录），一键可达全部格式，不再只开单个 epub。
+- **改动点**：
+  - progress_headless.py `finish()` 加可选参数 `product_dir`（done 事件
+    payload 携带；不传则字段缺省，前端走上溯兜底）；progress_ui.py 同名
+    方法同步签名（GUI 旧版忽略）。
+  - pipeline.py：`pw.finish(..., product_dir=str(output_base / deliver_name))`
+    ——传**实际交付目录**而非 work_dir：撞名避让（_unique_book_dir →
+    「书名 (N)」）时产物在避让目录里，按钮要开的是有 epub/ md/ tex/ 的
+    那个（E2E 实测 smoke (9) 避让路径正确）。
+  - protocol.ts done 事件加 `product_dir?: string`；queue.ts 存
+    `task.productDir`（缺字段时 `productDirOf` 从 epub_path 上溯两级兜底，
+    交付恒为 <work_dir>/epub/<书名>.epub；形态不符返回 undefined 不动作）；
+    retry 重置同步清 productDir。
+  - QueueItem.tsx：图标 BookCheck → FolderOpen，文案 `S.convert.openFolder`
+    （「打开文件夹」），点击 `open_file(productDir ?? epubPath)`（无
+    productDir 退回旧行为开 epub；路径不存在走 notify.error 现有模式）。
+    strings.ts：`openEpub` 键删除换 `openFolder`（grep 确认零残留引用）。
+  - **勘察发现的实弹坑**（lib.rs `open_file`）：该命令对目录经
+    `cmd /c start "" <dir>`——探针实测**不弹可见 Explorer 窗口**（进程
+    句柄/窗口标题零变化；invoke 返回 Ok 属假成功）。修复：目录改走
+    `explorer.exe <dir>` 直开（实测窗口秒开）；文件仍走 cmd start
+    （关联程序打开，行为不变）。
+- **回归**：tests/test_progress_headless.py +2 例（done 带 product_dir /
+  不传时字段缺省）；GUI vitest 75/75（新增 case055-open-folder 4 例：
+  product_dir 透传 / epub_path 上溯兜底 / productDirOf 正反斜杠与形态
+  不符不动作 / retry 清零）；AGENTS 强制链全部 Python 测试绿；
+  pnpm build（tsc+vite）绿。
+  E2E（scripts/cdp_case055_open_folder.mjs，重编译后的 dev 实例 CDP 9224，
+  7/7 ALL PASS）：真跑 _regress/smoke.pdf（VLM 缓存秒完）→ done 卡片
+  按钮文案「打开文件夹」、无「打开 EPUB」残留 ✓；productDir 指向实际
+  交付目录（撞名避让 smoke (9)）✓；点击后 Explorer 窗口「smoke (9) -
+  文件资源管理器」真实弹出 ✓；无报错通知 ✓。截图 _regress/case055-
+  {done-card,after-open}.png 亲读确认。
+- **状态**：已完成并验证（dev 实例已重启且 src-tauri 改动经 tauri dev
+  自动重编译加载；不打包，发布期另按 wiki/05 走）。wiki/08 队列卡片段
+  已同步。
+
+## 病例 056｜TeX 片段被当完整文档直接编译（pdflatex 满屏报错）— 防呆三件套
+
+- **现象**（用户 2026-09-20 报告）：用户设置「完整 TeX 文档」=关 → 产物
+  是片段（无导言区，设计如此），但片段文件无任何提示，用户拿它直接
+  pdflatex 编译，满屏报错（`! Undefined control sequence \chapter` /
+  `Missing \begin{document}` 等——(1)/tex/秦汉史讲义.log 实证）。
+- **修补点**：
+  - stage3_export.py `export_tex` 片段分支：头部加注释警告块
+    （_TEX_FRAGMENT_NOTICE：本文件为片段、不能直接编译、\input 用法、
+    开启「完整 TeX 文档」指引；TeX 注释不影响 \input）。
+  - 完整文档首行 magic comment `% !TeX program = xelatex`——核查后确认
+    三种 preamble（zh/en/ja）本就已带（首行），本轮以测试钉死语义。
+  - GUI strings.ts texFullDesc：「关闭则只产片段（可直接 \input）」→
+    补「片段不能直接编译」。
+  - **编译验证钓出的存量 bug**（export_tex 表格发射器）：单行表（仅
+    表头无数据行，韩非子目录实测）`\midrule\relax` 紧跟 `\bottomrule`
+    断 \noalign 连锁 → `! Misplaced \noalign`（探针最小复现）；
+    空表体省略 \relax（无数据行即无 FG '(' 吞 trim 场景，\relax 本就
+    多余），有数据行保留 \relax（FG 防护不回归）。
+- **用户书重产**：D:\temp_files\秦汉史讲义（秦晖） (1)\tex\ 下——
+  原片段改名保留为 秦汉史讲义.fragment.tex；用 .venv python 直调
+  build_units（work_dir=D:\temp_files\秦汉史讲义（秦晖）\，mineru
+  缓存 11 单元）+ export_tex(full=True) 重产完整文档 秦汉史讲义.tex
+  （406,545 字符，首行 magic comment）。
+- **编译验证**（MiKTeX xelatex，两遍 -interaction=nonstopmode
+  -halt-on-error）：pass1 exit 0 / 0 错误 / 504 页 / 5.7s；pass2 exit 0 /
+  0 错误 / 506 页 / 4.7s（目录落定，PDF 书签 49 条两级嵌套与 EPUB nav
+  一致；106 条 Overfull 为排版警告非错误）。aux/toc/log/out 中间文件
+  已清理，留 秦汉史讲义.pdf（8.6MB）。
+- **回归**：tests/test_stage3_export.py +3 例（完整文档三语言首行
+  magic comment / 片段首行注释警告且正文不受影响 / 单行表 \midrule
+  不带 \relax 而多行表保留）→ 30/30；AGENTS 强制链全部 Python 测试绿；
+  GUI vitest 75/75、pnpm build 绿（本轮 GUI 仅文案，vite HMR 自取，
+  dev 实例无需重启，1520 存活确认）。
+- **状态**：已修复并验证。wiki/01 产物契约段已同步。
+
+## 病例 057｜产物库 reveal 对目录翻车开「文档」— 按钮语义直义化
+
+- **现象**（用户实测）：产物库详情页目录产物行（md/）的「在文件夹显示」
+  按钮点开的是「文档」主文件夹——Explorer 无法 /select 目录，回落默认
+  位置。根因：reveal_in_explorer 恒走 `explorer /select,"<path>"`。
+- **探针钓出的更大坑**（cdp 探针 A–E 实测）：`explorer /select,"<path>"`
+  单参数带引号形态在本机**对文件也翻车**（ASCII/中文路径一律开「文档」）；
+  可用形态是 `/select,` 与路径分两个 argv、不引号包裹（E 单参数无引号
+  遇路径空格截断也灭）。即旧 reveal 对文件同样是坏的，只是没人按过。
+- **修补点**：
+  - lib.rs `reveal_in_explorer`：抽出纯决策 `reveal_plan`（路径归一化：
+    \\?\ 剥离 + / → \）；目录 → `explorer.exe <dir>` 直开（与 055
+    open_file 目录分支行为一致）；文件 → `/select,` 与路径分两个 argv。
+    路径不存在照旧报错（失败方向=不动作）。
+  - Library.tsx FileRow：目录行不再渲染 reveal 按钮（与 open 等价，
+    冗余且原是坏的）；open 按钮 Tooltip 动态化（目录=「打开文件夹」/
+    文件=「打开文件」）。决策抽成纯函数 `fileRowActions`（registry.ts）
+    供 vitest；strings.ts 旧 `library.open`（语义含糊的「打开」）删除，
+    加 openFile/openFolder 两键。
+  - 055 的 QueueItem「打开文件夹」走 open_file 目录分支（explorer 直开），
+    与本修复语义一致，无冲突（E2E c1 顺带复验）。
+- **回归**：cargo test 6/6（新增 reveal_plan 目录直开/文件 /select 两例，
+  含 \\?\ 剥离与斜杠归一化断言）；GUI vitest 78/78（新增
+  case057-filerow 3 例：目录行单按钮+tooltip 打开文件夹、文件行双按钮+
+  tooltip 切换、旧 open 键移除）；pnpm build 绿；Python 侧未动，抽查
+  progress_headless/stage3_export/pipeline_registry/completion_sound 全绿。
+  E2E（scripts/cdp_case057_reveal_dir.mjs，重编译后的 dev 实例 CDP 9224，
+  10/10 ALL PASS）：秦汉史 (1) 详情页 md 行 1 按钮、epub/tex 行 2 按钮 ✓；
+  三处 tooltip 文案 ✓；点 md 行 open → Explorer「md - 文件资源管理器」
+  窗口真实弹出 ✓；点 epub 行 reveal →「epub - 文件资源管理器」窗口弹出
+  （/select 修复生效）✓。截图 _regress/case057-{detail,md-opened,
+  epub-revealed}.png 亲读确认。（E2E 窗口证据按 进程Id|标题 对差集——
+  同目录复开只聚焦不新增窗口；脚本开场先清残留 Explorer 文件夹窗口。）
+- **状态**：已修复并验证（dev 实例已全量重启，含 Rust 重编译；不打包，
+  发布期另按 wiki/05 走）。wiki/08 详情页按钮段已同步。

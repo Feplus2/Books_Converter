@@ -24,7 +24,7 @@ PDF ──▶ Stage 1 解析引擎（云端 OCR/版面分析）
                 产出：popo_blocks.json + structure.json
           ──▶ Stage 3 EPUB 装订（stage3_epub）
                 线性切章 → 嵌套 nav → MathML/尾注/封面
-                产出：<书名>.epub（工作目录）+ 复制到 PDF 旁
+                产出：根级 <书名>.epub → _deliver 复制进 epub/
                 └─ 平行导出（stage3_export，--format epub,md,tex 多选）：
                    复用 _render_popo_body 单元判定，HTML parts →
                    Markdown（GFM/Pandoc、单文件/分章）与 TeX（xelatex 完整
@@ -32,6 +32,33 @@ PDF ──▶ Stage 1 解析引擎（云端 OCR/版面分析）
           ──▶ Stage 4 翻译（可选，stage4_translate，--translate zh）
                 DeepSeek 分批+上下文+译名表；translations.json 断点续翻
 ```
+
+### 产物目录契约（病例 049 起）
+
+`<输出目录>/<书名>/`（work_dir 兼任缓存根与交付根）终态只留交付物 + 缓存：
+
+```
+├── epub/<书名>.epub   电子书成品
+├── md/                Markdown（index.md + chapters/ 分章 + images/）
+├── tex/               TeX + images/（默认完整文档可 xelatex 直接编译，
+│                      首行 % !TeX program = xelatex magic comment 防
+│                      pdflatex 误编译；片段模式头部带「不能直接编译」
+│                      注释警告块，见 FIXLOG 病例 056）
+├── vlm/ mineru/ paddleocr/
+                     Stage 1 引擎缓存（按引擎名各存一份：vlm=逐页视觉模型，
+                     mineru/paddleocr=规则引擎族，三者互不通用；重跑提速，可整个删）
+└── structure.json / popo_blocks.json / translations.json
+                     Stage 2/4 小缓存（复跑与 qc_book 需要）
+```
+
+缓存目录**按引擎键控**（`work_dir / <engine>`，pipeline.py:630）而非按
+"规则/VLM" 家族合并——同一本书换引擎 A/B 时两份缓存必须共存互踩不得
+（FIXLOG 047 的 MinerU/Paddle 对照实验即依赖这一点）。
+
+`_deliver` 全部格式复制成功后，pipeline 自动清理根级中间产物
+（`<书名>.epub/.tex/.md`、`<书名>_md/`、根级 `images/`、`cover.jpg`——
+它们与交付副本字节相同，且每跑必从引擎缓存/PDF 重建，重跑不依赖）。
+任一格式导出/交付失败则不清理（失败方向 = 不动作）。
 
 ## LLM 调用约定
 
