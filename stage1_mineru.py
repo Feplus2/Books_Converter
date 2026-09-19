@@ -104,7 +104,15 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
 
             elapsed = time.time() - t0
             if result.state != "done":
-                raise RuntimeError(f"片 {chunk_idx + 1} 失败: state={result.state}")
+                # 带上 SDK 返回的错误码与错误信息，否则用户只看到 state=xxx 无法排查
+                detail = f" state={result.state}"
+                err_code = getattr(result, "err_code", "")
+                err_msg = getattr(result, "error", None)
+                if err_code:
+                    detail += f" err_code={err_code}"
+                if err_msg:
+                    detail += f" err_msg={err_msg}"
+                raise RuntimeError(f"片 {chunk_idx + 1} 失败:{detail}")
 
             md_chunk = result.markdown or ""
             blocks_chunk = result.content_list or []
