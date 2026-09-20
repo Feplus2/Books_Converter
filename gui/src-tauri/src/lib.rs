@@ -26,7 +26,15 @@ fn open_task_log(pdf: &str) -> Option<std::fs::File> {
         .take(40)
         .collect();
     let ts = chrono_lite_now();
-    let dir = sidecar::repo_root().join("_batch_logs");
+    // 发布模式日志落用户配置目录（仓库编译期路径在用户机上不存在，
+    // create_dir_all 会污染有同盘符的用户机——病例 060）；开发模式照旧
+    // 落仓库 _batch_logs/
+    let dir = match sidecar::resolve_pipeline() {
+        Some(sidecar::PipelinePlan::Sidecar { .. }) => std::env::var("APPDATA")
+            .map(|a| PathBuf::from(a).join("com.booksconverter.app").join("logs"))
+            .unwrap_or_else(|_| sidecar::repo_root().join("_batch_logs")),
+        _ => sidecar::repo_root().join("_batch_logs"),
+    };
     std::fs::create_dir_all(&dir).ok()?;
     std::fs::File::create(dir.join(format!("gui-{safe}-{ts}.log"))).ok()
 }
@@ -249,13 +257,21 @@ async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<String>, 
 #[tauri::command]
 async fn check_update() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = sidecar::repo_root();
-        let python = sidecar::python_exe(&root);
-        let pipeline = sidecar::pipeline_script(&root);
-        let mut cmd = std::process::Command::new(python);
-        cmd.arg(pipeline)
+        // 发布模式直拉 sidecar exe；开发模式走仓库 .venv + pipeline.py（060）
+        let (prog, prefix_args, cwd) = match sidecar::resolve_pipeline() {
+            Some(sidecar::PipelinePlan::Sidecar { exe }) => {
+                let cwd = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                (exe, vec![], cwd)
+            }
+            Some(sidecar::PipelinePlan::Dev { python, script, cwd }) => {
+                (python, vec![script.to_string_lossy().into_owned()], cwd)
+            }
+            None => return Err("未找到转换引擎，无法检查更新".into()),
+        };
+        let mut cmd = std::process::Command::new(prog);
+        cmd.args(prefix_args)
             .arg("--check-update")
-            .current_dir(&root)
+            .current_dir(&cwd)
             .env("PYTHONIOENCODING", "utf-8")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());

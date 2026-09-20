@@ -28,6 +28,8 @@ class _FakeResult:
         self.images = []
         self.error = "parsing failed, please try again later" \
             if state != "done" else None
+        # MinerU SDK ExtractResult 同名字段（mineru/client.py:137-145）
+        self.err_code = "50001" if state != "done" else ""
 
 
 class _FakeMinerU:
@@ -139,6 +141,52 @@ class SplitFailDegradeTest(unittest.TestCase):
             self.assertEqual(info["failed_pages"], [])
             # 超时片每节点只提交一次（不睡重试）：调用序列=递归树先序遍历
             self.assertEqual(fake.calls, [30, 15, 8, 7, 15, 8, 7])
+
+
+class CloudErrDetailTest(unittest.TestCase):
+    """病例 060（吸收 PR#2 思想）：云端 state=failed 时日志透出 SDK 的
+    err_code/err_msg——用户不再只看到「解析失败」无法自助排查。"""
+
+    def test_cloud_err_detail_fields(self):
+        r = _FakeResult("failed", 1)
+        self.assertEqual(stage1_mineru._cloud_err_detail(r),
+                         "（err_code=50001 "
+                         "err_msg=parsing failed, please try again later）")
+        self.assertEqual(stage1_mineru._cloud_err_detail(None), "")
+        ok = _FakeResult("done", 1)
+        self.assertEqual(stage1_mineru._cloud_err_detail(ok), "")
+
+    def test_failed_page_log_carries_err_msg(self):
+        """单页仍败的 error 日志带 err_code/err_msg（秦汉史式排查实证）。"""
+        import io
+        import logging
+        with tempfile.TemporaryDirectory() as td:
+            pdf = Path(td) / "one.pdf"
+            _make_pdf(pdf, 1)
+
+            class _AlwaysFail:
+                def __init__(self, _t):
+                    pass
+
+                def extract(self, path, **kw):
+                    return _FakeResult("failed", 1)
+
+                def close(self):
+                    pass
+
+            logbuf = io.StringIO()
+            handler = logging.StreamHandler(logbuf)
+            logging.getLogger("stage1_mineru").addHandler(handler)
+            try:
+                with mock.patch.object(stage1_mineru, "MinerU",
+                                       lambda _t: _AlwaysFail("t")):
+                    info = stage1_mineru.run_mineru(str(pdf), td)
+            finally:
+                logging.getLogger("stage1_mineru").removeHandler(handler)
+            self.assertEqual(info["failed_pages"], [0])
+            out = logbuf.getvalue()
+            self.assertIn("err_code=50001", out)
+            self.assertIn("err_msg=parsing failed", out)
 
 
 if __name__ == "__main__":

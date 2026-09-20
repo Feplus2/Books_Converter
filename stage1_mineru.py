@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 class _CloudTimeout(Exception):
     """云端轮询超时（任务排队/龟速）——与网络抖动区分：上层对半拆，不睡重试。"""
 
+
+def _cloud_err_detail(result) -> str:
+    """SDK ExtractResult 的云端错误详情（MinerU SDK：err_code/err_msg→error，
+    见 mineru/client.py）。有才返回「 err_code=… err_msg=…」，没有/超时
+    （result=None）返回空串——失败方向=不动作，绝不编造。"""
+    if result is None:
+        return ""
+    parts = []
+    code = getattr(result, "err_code", "") or ""
+    msg = getattr(result, "error", None) or ""
+    if code:
+        parts.append(f"err_code={code}")
+    if msg:
+        parts.append(f"err_msg={msg}")
+    return f"（{' '.join(parts)}）" if parts else ""
+
 # 双天花板（云端硬限制：单文件 ≤200MB 且 ≤600 页，SDK FileTooLargeError/
 # PageLimitError 实证）。字节取 200MB 的 75 折留余量；页数 200 为免费档建议值。
 CHUNK_MAX_PAGES = 200
@@ -214,13 +230,15 @@ def run_mineru(pdf_path: str, output_dir: str, ocr: bool = True,
             return [(result, start0)]
         if start0 == end0:
             why = "解析失败" if result is not None else "轮询超时"
-            logger.error(f"    第 {start0 + 1} 页云端{why}，"
+            logger.error(f"    第 {start0 + 1} 页云端{why}"
+                         f"{_cloud_err_detail(result)}，"
                          f"跳过该页（内容缺口，QC 缺页检查会报）")
             failed_pages.append(start0)
             return []
         mid = start0 + (end0 - start0) // 2
         why = "云端解析失败" if result is not None else "云端轮询超时"
-        logger.warning(f"    {tag}（第 {start0 + 1}-{end0 + 1} 页）{why}，"
+        logger.warning(f"    {tag}（第 {start0 + 1}-{end0 + 1} 页）{why}"
+                       f"{_cloud_err_detail(result)}，"
                        f"对半拆为 {start0 + 1}-{mid + 1} / {mid + 2}-{end0 + 1} 重试")
         _report(f"{tag}: {why}，对半拆分重试…", None)
         doc = fitz.open(str(chunk_path))
