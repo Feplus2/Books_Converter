@@ -23,11 +23,12 @@ PDF → Stage 1 解析引擎（MinerU 云 / PaddleOCR-VL 云 / VLM 逐页视觉�
 
 ## 界面
 
-Tauri 2 + React 桌面 GUI（旧 tkinter GUI 冻结维护中，见[界面关系](#界面关系)）：
+Tauri 2 + React 桌面 GUI（旧 tkinter GUI 冻结维护中，见[界面关系](#界面关系)），
+明暗双主题：
 
-![转换页：拖放入队、规则/VLM 两模式、详细选项、队列卡片（引擎徽章 + 真实阶段刻度进度条 + 打开文件夹）](docs/images/convert.png)
+![转换页（亮色主题）：拖放入队、规则/VLM 两模式、详细转换选项](docs/images/convert-light.png)
 
-![产物库：纯登记制卡片流（引擎/格式徽标、完成时间、耗时、丢失徽标）](docs/images/library.png)
+![手册页（暗色主题）：三步上手与两种模式怎么选](docs/images/convert-dark.png)
 
 ## 三引擎
 
@@ -271,9 +272,44 @@ popo/                # vendor 自 MinerU-Popo（MIT），候选筛选/建树/表
 
 ## 致谢
 
-- [MinerU](https://github.com/opendatalab/MinerU) — 文档解析云 API
+**解析服务**
+
+- [MinerU](https://github.com/opendatalab/MinerU) — 文档解析云 API，
+  本项目默认引擎
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（百度）—
+  PaddleOCR-VL 云端识别服务
+- [DeepSeek](https://www.deepseek.com/) — 结构重建四项标注与全书翻译
+- [智谱 GLM](https://www.bigmodel.cn/) — VLM 引擎逐页转写（GLM-4.6V /
+  GLM-5.3 系列）
+
+**灵感与代码**
+
 - [MinerU-Popo](https://github.com/opendatalab/MinerU-Popo)（MIT）—
-  OCR 后处理框架，本项目的候选筛选/prompt/表格合并/建树框架来自它
+  OCR 后处理框架：候选筛选 / prompt / 表格合并 / 建树框架 vendor 自它
+  （见 `popo/`，许可证文本 [popo/LICENSE](popo/LICENSE)）
+- [pdf-craft](https://github.com/oomol-lab/pdf-craft)（AGPL）— 标题层级
+  几何判别（bbox 高度 CV 聚类，「字号阶梯」）的灵感来源；本项目按思想
+  重写、未使用其代码（FIXLOG 病例 010，`stage2_common.py:1474`）
+- [SageRead](https://github.com/Feplus2/SageRead) — 姊妹项目：GUI 的
+  vision-map（视觉型号判定表）逐行移植自它，提供商预设/思考档协商
+  口径同源，sidecar 协议与组件样式多有借鉴
+
+**开源组件**
+
+- 管线：[PyMuPDF](https://pymupdf.readthedocs.io/)（PDF 页渲染与物理
+  切片）、[EbookLib](https://github.com/aerkalov/ebooklib)（EPUB 装订）、
+  [latex2mathml](https://github.com/roniemartinez/latex2mathml)（公式转
+  MathML）、Pillow、BeautifulSoup、OpenAI SDK、mineru-open-sdk
+- GUI：[Tauri](https://tauri.app/) 2、[React](https://react.dev/) +
+  [Vite](https://vite.dev/) + [Tailwind CSS](https://tailwindcss.com/)、
+  [Lucide](https://lucide.dev/) 图标、Inter / JetBrains Mono 字体
+  （@fontsource）
+
+**素材**
+
+- 提示音：`assets/complete.wav`、`assets/fail.wav` 均出自
+  [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds)
+  （CC0；分别为 confirmation_002、minimize_008 的 WAV/转码版本）
 
 ## License
 

@@ -1,8 +1,9 @@
 # Release Notes
 
-## v1.4.0（草稿 / 未发布）
+## v2.0.0（草稿 / 未发布）
 
-> 起草案。版本号建议 1.4.0（GUI 全面改版 + 一批管线修复）。发布前流程见
+> 起草案。版本号已裁定 2.0.0（GUI 全面改版 + md/tex 新产物形态 +
+> 一批管线修复，改动幅度远超补丁级）。发布前流程见
 > `wiki/05-build-release.md`（version.py 递增、PyInstaller 打包、sidecar
 > 部署）。
 

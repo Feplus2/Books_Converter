@@ -183,7 +183,9 @@ progress 事件的 `detail` 进队列卡片常显详情行（如「VLM 阅读 12
 - 提示音：`winsound.Beep` 根因确诊，换异步 WAV（FIXLOG 040，
   `assets/complete.wav` + `CONVERT_COMPLETE_SOUND`）；失败音同模式
   （FIXLOG 054，`assets/fail.wav` + `CONVERT_FAIL_SOUND`，接线在
-  pipeline 失败路径与旧 tkinter app.py，用户取消不响）。
+  pipeline 失败路径与旧 tkinter app.py，用户取消不响）。设置页为
+  单开关（FIXLOG 059：开=完成+失败都响，关=都静音；试听按钮与
+  read_complete_sound command 已移除；buildEnv 双 env 键同开同关）。
 - **病例 050 显示层诚实化**（2026-09-19）：start 事件 engine 真实化 +
   `stage_bounds`；队列卡片引擎徽章 + 常显详情行；hover 位移自激修复；
   MinerU est 收窄 2.0 s/页、headless 爬行按预估配速；「再次转换」toast

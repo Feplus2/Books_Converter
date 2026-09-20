@@ -2032,3 +2032,36 @@
   「前往 Releases 下载」按钮在场。截图 _regress/case058-{settings-before,
   settings-update,about-section}.png。
 - **状态**：已完成并验证（dev 实例 1520/9224 存活，前端经 vite HMR 自取）。
+
+## 病例 059｜提示音设置简化为单开关（用户裁定）+ README 致谢/配图 + v2.0.0
+
+- **决策**（2026-09-20 用户拍板）：提示音不要试听、不要完成/失败分开
+  控制——一个开关，开=完成+失败都响，关=都静音。
+- **修补点**：
+  - settings.ts `buildEnv`：`!s.sound` 时同时注入 CONVERT_COMPLETE_SOUND
+    =off 与 CONVERT_FAIL_SOUND=off（CLI 侧双 env 独立语义不动）；
+    settings schema 本就只有单一 `sound` 字段（`?? true` 容忍旧配置）。
+  - Settings.tsx：提示音行移除试听按钮与 previewSound 函数，简化为
+    label + 说明 + 单 Toggle；strings.ts groupSound=提示音 /
+    soundLabel=转换提示音 / soundDesc=开：完成与失败都响；关：全部静音
+    （soundPreview 键删除，Play 图标 import 清理）。
+  - lib.rs：`read_complete_sound` command 及其注册删除（前端引用已随
+    试听按钮移除，死代码清零）。
+- **同轮文书**：
+  - README 致谢节扩写为四层（解析服务/灵感与代码/开源组件/素材）——
+    溯源确认字号聚类（bbox 高度 CV 聚类）确在使用，灵感署名 pdf-craft
+    （AGPL，按思想重写，stage2_common.py:1474 + 病例 010）；Kenney
+    Interface Sounds（CC0）双提示音素材署名；SageRead 移植/同源项署名。
+  - README 配图换用户指定双主题截图（docs/images/convert-{dark,light}.png，
+    旧 convert.png/library.png git rm）。
+  - 版本号直升 v2.0.0：version.py、gui/package.json、
+    gui/src-tauri/tauri.conf.json、gui/src-tauri/Cargo.toml、
+    Settings.tsx APP_VERSION 五处同步；RELEASE_NOTES.md 草稿节标题
+    v1.4.0 → v2.0.0（未发布，不 push/不 tag/不发 release）。
+- **回归**：GUI vitest 82/82（settings-env 提示音用例改双 env 断言）；
+  pnpm build 绿；cargo test 6/6。CDP（scripts/cdp_case059_sound_toggle.mjs，
+  重编译后的 dev 实例，5/5 ALL PASS）：行 label=转换提示音、说明文案
+  在场、无「试听」残留、行内零 icon-btn、开关写入生效并还原 ✓；截图
+  _regress/case059-{sound-row,sound-row2}.png（版本行 v2.0.0 同框亲读）。
+- **状态**：已修复并验证（dev 实例经 tauri dev 自动重编译 v2.0.0 加载；
+  不发版）。wiki/08 提示音段已同步。
