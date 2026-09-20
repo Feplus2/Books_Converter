@@ -139,7 +139,12 @@ export function buildEnv(s: Settings, o: ConvertOptions): Record<string, string>
     PADDLEOCR_TOKEN: s.ocr.paddleocrToken,
     PADDLEOCR_API_URL: s.ocr.paddleocrApiUrl,
   };
-  if (!s.sound) env.CONVERT_COMPLETE_SOUND = "off";
+  // 提示音单开关（病例 059 用户裁定：开=完成+失败都响，关=都静音；
+  // CLI 侧的 CONVERT_*_SOUND 独立 env 语义不动，那是 CLI 的事）
+  if (!s.sound) {
+    env.CONVERT_COMPLETE_SOUND = "off";
+    env.CONVERT_FAIL_SOUND = "off";
+  }
 
   if (o.mode === "vlm") {
     env.VLM_REASONING = o.reasoning;

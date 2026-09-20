@@ -334,13 +334,6 @@ fn default_output_dir() -> String {
         .into_owned()
 }
 
-/// 完成提示音字节（前端 blob→Audio 试听用）
-#[tauri::command]
-fn read_complete_sound() -> Result<Vec<u8>, String> {
-    let wav = sidecar::repo_root().join("assets").join("complete.wav");
-    std::fs::read(&wav).map_err(|e| format!("读取提示音失败（{}）: {e}", wav.display()))
-}
-
 /// registry/前端来的路径可能带 \\?\ 扩展前缀（如 pipeline 经 canonicalize 的路径），
 /// cmd start / explorer 不认，剥掉再交给 shell。
 #[cfg(windows)]
@@ -489,7 +482,6 @@ pub fn run() {
             fetch_models,
             check_update,
             default_output_dir,
-            read_complete_sound,
             reveal_in_explorer,
             open_file,
             open_url,

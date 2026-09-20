@@ -12,7 +12,6 @@ import {
   FolderOpen,
   Monitor,
   Moon,
-  Play,
   Plus,
   RefreshCw,
   ScanText,
@@ -40,7 +39,7 @@ import { Select } from "../components/Select";
 import { Toggle } from "../components/Toggle";
 import { Tooltip } from "../components/Tooltip";
 
-const APP_VERSION = "1.3.9"; // 与仓库 version.py 对齐
+const APP_VERSION = "2.0.0"; // 与仓库 version.py 对齐
 
 function Group({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -435,16 +434,6 @@ function OptionsSection() {
     if (typeof dir === "string") setOpts({ outputDir: dir });
   };
 
-  const previewSound = async () => {
-    try {
-      const bytes = await invoke<number[]>("read_complete_sound");
-      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "audio/wav" }));
-      await new Audio(url).play();
-    } catch (e) {
-      notify.error(String(e));
-    }
-  };
-
   const checkUpdate = async () => {
     setChecking(true);
     setUpdateMsg(null);
@@ -596,18 +585,11 @@ function OptionsSection() {
       </Group>
 
       <Group title={S.settings.groupSound}>
-        <Row label={S.settings.soundLabel}>
-          <div className="flex items-center justify-end gap-2">
-            <Tooltip label={S.settings.soundPreview}>
-              <button className="icon-btn" onClick={previewSound}>
-                <Play size={14} />
-              </button>
-            </Tooltip>
-            <Toggle
-              checked={settings.sound}
-              onChange={(v) => settingsStore.update({ sound: v })}
-            />
-          </div>
+        <Row label={S.settings.soundLabel} desc={S.settings.soundDesc}>
+          <Toggle
+            checked={settings.sound}
+            onChange={(v) => settingsStore.update({ sound: v })}
+          />
         </Row>
       </Group>
 

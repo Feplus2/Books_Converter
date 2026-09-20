@@ -61,12 +61,16 @@ describe("buildEnv VLM 同源注入", () => {
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
   });
 
-  it("提示音关闭 → CONVERT_COMPLETE_SOUND=off；开启则不注入", () => {
+  it("提示音单开关：关闭 → 完成/失败双 env 同 off；开启都不注入", () => {
     const s = base();
     s.sound = false;
-    expect(buildEnv(s, s.defaults).CONVERT_COMPLETE_SOUND).toBe("off");
+    const envOff = buildEnv(s, s.defaults);
+    expect(envOff.CONVERT_COMPLETE_SOUND).toBe("off");
+    expect(envOff.CONVERT_FAIL_SOUND).toBe("off");
     s.sound = true;
-    expect(buildEnv(s, s.defaults).CONVERT_COMPLETE_SOUND).toBeUndefined();
+    const envOn = buildEnv(s, s.defaults);
+    expect(envOn.CONVERT_COMPLETE_SOUND).toBeUndefined();
+    expect(envOn.CONVERT_FAIL_SOUND).toBeUndefined();
   });
 });
 

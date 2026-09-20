@@ -1,6 +1,6 @@
 [package]
 name = "books-converter-gui"
-version = "1.3.9"
+version = "2.0.0"
 description = "Books Converter 桌面 GUI"
 authors = ["Books_Converter"]
 edition = "2021"
