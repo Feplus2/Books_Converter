@@ -2065,3 +2065,53 @@
   _regress/case059-{sound-row,sound-row2}.png（版本行 v2.0.0 同框亲读）。
 - **状态**：已修复并验证（dev 实例经 tauri dev 自动重编译 v2.0.0 加载；
   不发版）。wiki/08 提示音段已同步。
+
+## 病例 060｜Tauri sidecar 发布机制落地（M4 兑现）+ err_msg 透传（吸收 PR#2）
+
+- **背景**：sidecar.rs 原只会拉编译期锁定的仓库 .venv + pipeline.py——
+  打包出去的 GUI 在用户机上无法转换（发版真缺口，059 前夜报告）。
+- **修补点**：
+  - sidecar.rs：`resolve_pipeline` 双模式纯决策（`resolve_pipeline_in`
+    注入 exe 目录/仓库根可单测）——主 exe 旁有 `books_converter.exe` →
+    发布模式直拉（透传 `<pdf> <args…> --headless`，事件协议不变）；
+    否则回退开发模式（仓库 .venv + pipeline.py）；两者都无 → 明确报错
+    不动作。`BC_FORCE_DEV_PIPELINE=1` 强制开发模式（tauri dev 会把
+    externalBin 拷进 target/debug，不强制则 dev 静默跑旧 exe——「你跑的
+    是旧实例」变体；dev 验收实例启动必带）。进程装配抽 `spawn_with`
+    共用（参数/cwd/env 注入/管道/NO_WINDOW）。
+  - lib.rs：`open_task_log` 发布模式改落 `%APPDATA%\com.booksconverter.
+    app\logs\`（原编译期仓库路径在用户机上 create_dir_all 会污染同盘符
+    目录）；`check_update` 发布模式直拉 sidecar exe `--check-update`。
+  - tauri.conf.json：`bundle.externalBin = ["binaries/books_converter"]`
+    （字段在 bundle 下，放错 app 下 build script 直接拒编——纠正过一次）；
+    实体 `gui/src-tauri/binaries/books_converter-x86_64-pc-windows-msvc.exe`
+    （PyInstaller 产物改名副本；binaries/ 已入 .gitignore 不入库）。
+  - stage1_mineru.py：`_cloud_err_detail`（新）——云端 state=failed 日志
+    透出 SDK `err_code`/`error`（err_msg）字段（MinerU SDK 字段名经
+    .venv 包源码 client.py:137-145 核实；没有就不动作）。吸收 PR#2
+    思想，不拣其代码（其 base 是 046/047 重写前的旧失败模型）。
+- **沙盒实测**（`_regress/case060-sandbox/`，zip 结构解到仓库外）：
+  `Books_Converter\Books Converter.exe`（主程序，带空格——Windows 大小写
+  不敏感，与 books_converter.exe 同名互覆踩过一次）+ `books_converter.exe`
+  双文件；kimi-cu 驱动原生文件对话框选入 smoke.pdf，CDP 点开始转换 →
+  done（8s）→ `D:\temp_files\smoke\epub\smoke.epub` 落盘；**发布模式
+  铁证**：任务日志落 `%APPDATA%\com.booksconverter.app\logs\
+  gui-smoke-*.log`（release-only 分支）。截图 _regress/case060-
+  sandbox-done.png（done 卡片：smoke/MinerU/完成/100%/打开文件夹）。
+  WebView2 调试坑：同一 user-data-folder 共享浏览器进程会吃掉后启动
+  实例的 CDP 参数，沙盒实例须设 `WEBVIEW2_USER_DATA_FOLDER` 隔开
+  （launch-cdp.bat 留存于沙盒目录）。
+- **dist/ 产物**：`books_converter-cli-v2.0.0-win64.zip`（61.5MB）、
+  `Books_Converter-v2.0.0-win64.zip`（65.3MB 绿色包，双 exe）、
+  `Books Converter_2.0.0_x64-setup.exe`（65.1MB NSIS）、
+  `Books Converter_2.0.0_x64_en-US.msi`（65.7MB）。
+  安装包内嵌 sidecar 未字节级抽验（本机无 7z/lessmsi），依赖 Tauri
+  externalBin 约定 + 绿色 zip 同构布局已过沙盒。
+- **回归**：cargo test 9/9（新增 resolve_pipeline_in 三分支 3 例）；
+  tests/test_stage1_mineru_split_fail.py +2 例（err_detail 字段形态 /
+  单页失败日志带 err_code/err_msg）→ 5/5；AGENTS 强制链 Python 全绿；
+  GUI vitest 82/82；pnpm build 绿。dev 实例（BC_FORCE_DEV_PIPELINE=1 +
+  CDP 9224）重启加载全部改动。
+- **状态**：已修复并验证。wiki/05 新增「Tauri GUI 发布链」段、wiki/08
+  M4 标记落地、RELEASE_NOTES 升级提示改写实至发布物、README 快速开始
+  对齐绿色 zip 形态。不 push、不 tag、不发 release。

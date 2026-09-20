@@ -1,11 +1,9 @@
 # Release Notes
 
-## v2.0.0（草稿 / 未发布）
+## v2.0.0（2026-09-20）
 
-> 起草案。版本号已裁定 2.0.0（GUI 全面改版 + md/tex 新产物形态 +
-> 一批管线修复，改动幅度远超补丁级）。发布前流程见
-> `wiki/05-build-release.md`（version.py 递增、PyInstaller 打包、sidecar
-> 部署）。
+> 发布说明。GUI 全面改版 + md/tex 新产物形态 + 一批管线修复，
+> 改动幅度远超补丁级，版本直升 2.0.0。
 
 ### 全新桌面 GUI（Tauri 2 + React）
 
@@ -55,5 +53,10 @@ GUI 是 sidecar 协议上的一层皮）：
   schema），与旧 `gui_settings.json` 分离，密钥需在新设置页重填一次
 - TeX 产物建议用 xelatex 编译（完整文档首行已带 magic comment，
   TeXworks/VSCode 会自动识别）
+- 本轮发布物：`books_converter-cli-v2.0.0-win64.zip`（headless CLI，
+  SageRead sidecar 与命令行通用）+ `Books_Converter-v2.0.0-win64.zip`
+  （绿色桌面包：`Books_Converter\Books Converter.exe` 主程序 +
+  `books_converter.exe` sidecar）+ `Books Converter_2.0.0_x64-setup.exe`
+  / `.msi`（NSIS/MSI 安装包，sidecar 随包落主程序旁）
 
 （自 1.3.9 以来的完整技术细节见 `FIXLOG.md` 病例 047–058）

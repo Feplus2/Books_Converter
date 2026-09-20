@@ -91,9 +91,9 @@ bbox），下游可选共用；但 Stage 2 分两个编排器——规则引擎�
 ### 方式 A：免安装绿色版（推荐给非技术用户）
 
 1. 到 [Releases](https://github.com/Feplus2/Books_Converter/releases) 下载
-   最新版 `Books_Converter-vX.Y.Z-win64.zip`
-2. 解压，双击 `Books_Converter.exe`（首次运行 Windows SmartScreen 会提示
-   「未知发布者」→ 更多信息 → 仍要运行）
+   最新版 `Books_Converter-vX.Y.Z-win64.zip`（或 `Books Converter_X.Y.Z_x64-setup.exe` 安装包）
+2. zip 解压（或运行安装包），双击 `Books_Converter\Books Converter.exe`
+   （首次运行 Windows SmartScreen 会提示「未知发布者」→ 更多信息 → 仍要运行）
 3. 在设置页填 Key（见下），把 PDF 拖进窗口，点「开始转换」
 
 ### 方式 B：源码运行

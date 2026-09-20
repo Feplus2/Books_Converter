@@ -158,9 +158,14 @@ progress 事件的 `detail` 进队列卡片常显详情行（如「VLM 阅读 12
 | M2 设置页全量 | 提供商/密钥管理+测试连接+模型激活、默认选项、明暗主题、检查更新 | 功能对齐旧 GUI 并超越 |
 | M3 打磨 | 动效/光效全量、Tooltip/toast 补齐、空态、"再次转换"、i18n 位 | 发布候选 |
 | M4 打包发布 | MSI/zip、books_converter_cli.exe sidecar 随附、自动更新链 | v2.0.0 |
-
 旧 `app.py`（tkinter）M1 起冻结维护，M4 后删除。管线/CLI/headless 协议
 保持不变（SageRead sidecar 不受影响）。
+
+- **M4 已落地**（2026-09-20，病例 060）：externalBin sidecar 发布机制
+  （resolve_pipeline 发布/开发双模式 + BC_FORCE_DEV_PIPELINE 开发强制
+  开关）、nsis/msi/绿色 zip 三形态构建通过、沙盒实测转换跑通（日志落
+  APPDATA 为发布模式铁证）。自动更新链未做（检查更新仍是手动跳
+  Releases）。发布流程详见 wiki/05「Tauri GUI 发布链」。
 
 ## 6. 里程碑状态
 
