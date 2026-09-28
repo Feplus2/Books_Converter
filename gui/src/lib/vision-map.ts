@@ -1,5 +1,5 @@
 /**
- * J2：模型多模态（图片）能力表 —— 纯静态枚举（2026-08-27 定稿，最近更新 2026-09-10）。
+ * J2：模型多模态（图片）能力表 —— 纯静态枚举（2026-08-27 定稿，最近更新 2026-09-23）。
  *
  * 范围（用户裁定）：**能生成文本的聊天模型**——只回答"text-to-text 还是 any-to-text
  * （含图片输入）"；图像/视频生成、语音系不在本表范围。
@@ -32,6 +32,8 @@ export const VISION_NAME_RE = /vision|-vl|vlm|omni|multimodal|4v\b|\.?\d+v\b/;
 const MODEL_VISION: Readonly<Record<string, boolean>> = {
   // ---- OpenAI（官方 Models 页 "All latest OpenAI models support text and image input"）----
   "gpt-6-astra": true, // 2026-09-03 发布、09-05 起 API 全量开放，官方型号页 Input: Text, image（2026-09-05 核实）
+  "gpt-6-sol": true, // 2026-09-22 发布，官方型号页 Input: Text, Image（2026-09-23 核实；Luna 同页同模态）
+  "gpt-6-luna": true, // 2026-09-22 发布，官方型号页 Input: Text, Image；effort none~max 六档（2026-09-23 核实）
   "gpt-5.6-sol": true,
   "gpt-5.6-sol-ultra": true,
   "gpt-5.6-terra": true,
@@ -79,6 +81,7 @@ const MODEL_VISION: Readonly<Record<string, boolean>> = {
   "claude-fable-5-1": true, // 2026-09-01 上线（Fable 5 继任者），官方文档 text & image input（2026-09-04 核实）
   "claude-fable-5": true,
   "claude-mythos-5": true,
+  "claude-opus-5-5": true, // 2026-09-22 发布（Claude 5.5 系首款）：官方发布页含视觉基准（Chartography），文档口径"现役全系 text+image input"（2026-09-23 核实）
   "claude-opus-5": true,
   "claude-opus-4.8": true,
   "claude-opus-4.7": true,
@@ -119,6 +122,7 @@ const MODEL_VISION: Readonly<Record<string, boolean>> = {
   "gemini-3.5-flash-cyber": false, // 2026-07 限量试点安全专用，二手称纯文本，无官方页可核（存疑拦截）
 
   // ---- xAI Grok（现役目录聊天型号全部 text+image；Oracle 合作页 + OpenRouter 目录交叉核实）----
+  "grok-4.7": true, // 2026-09-21 发布：OpenRouter 目录 input_modalities=[text,image,file]（docs.x.ai 当日不可达，2026-09-23 核实）
   "grok-4.6": true,
   "grok-4.5": true,
   "grok-4.3": true,
@@ -242,6 +246,9 @@ const MODEL_VISION: Readonly<Record<string, boolean>> = {
   "mimo-v2.5": true, // 310B MoE，原生全模态（图像/视频/音频/文本）
   "mimo-v2.5-pro": true, // 旗舰推理，同基座多模态
   "mimo-v2-omni": true, // 全模态基座（文本+视觉+语音），256K
+  "mimo-v2.6-pro": true, // 2026-09-22 发布：官方模型页 输入模态 文本/图像/视频/音频（2026-09-22 核实）
+  "mimo-v2.6-flash": true, // 同上，高效版（1M 上下文）
+  "mimo-v2.6-pro-ultraspeed": true, // Pro 的 20 倍速变体，官方页同模态口径
   "mimo-vl": true, // 视觉语言版（V2 系，已切换到 V2.5 但存量可能存在）
   "mimo-7b": false, // 纯文本推理（数学/代码强化训练，开源 2025）
 
@@ -322,6 +329,11 @@ const MODEL_VISION: Readonly<Record<string, boolean>> = {
   "hunyuan-turbo": false, // 纯文本（2026-06-22 旧模型下线后仍可通过 TokenHub 调用）
   "hunyuan-pro": false,
   "hunyuan-standard": false, // 文本系
+
+  // ---- 阶跃星辰 Step（step.com；2026-09-20 随 SageRead v0.4.0 入表，此处为同步移植）----
+  "step-5-preview": true,
+  "step-3.7-flash": true,
+  "step-3.5-flash": false,
 
   // ---- 字节豆包 Doubao（火山方舟模型列表 volcengine.com/docs/82379/1554680；2026-08-30 核实）----
   // API ID 用连字符（doubao-seed-1-6，控制台展示名才是点号 doubao-seed-1.6）；带六位日期
