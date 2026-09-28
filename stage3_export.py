@@ -26,6 +26,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# 译文产物文件名语言后缀（病例 062 用户裁定：原文直出原名，译文带后缀）。
+# 键 = --translate 目标语言码；未收录语言直接用语言码本身
+LANG_SUFFIX = {"zh": "cn", "ja": "jp", "en": "en"}
+
 # ---------------------------------------------------------------------------
 # 单元构建（复用 stage3 全部语义判定）
 # ---------------------------------------------------------------------------
@@ -42,8 +46,12 @@ def _load_cache(work_dir: Path, engine: str) -> dict:
             "images_dir": str(eng_dir / "images")}
 
 
-def build_units(work_dir: str | Path, use_translations: bool = True) -> list:
-    """从工作目录缓存重建 stage3 单元（HTML parts 已含全部结构判定）。"""
+def build_units(work_dir: str | Path, use_translations: bool = True,
+                zh_override: bool | None = None) -> list:
+    """从工作目录缓存重建 stage3 单元（HTML parts 已含全部结构判定）。
+
+    zh_override：强制中文标点转换开关（译文按目标语言定，与原文语言无关）；
+    None 时按书籍元数据 language 判定。"""
     import stage3_epub as s3
     work_dir = Path(work_dir)
     structure = json.loads((work_dir / "structure.json").read_text(encoding="utf-8"))
@@ -64,11 +72,17 @@ def build_units(work_dir: str | Path, use_translations: bool = True) -> list:
     translations = None
     tfile = work_dir / "translations.json"
     if use_translations and tfile.is_file():
-        translations = json.loads(tfile.read_text(encoding="utf-8"))
+        raw = json.loads(tfile.read_text(encoding="utf-8"))
+        # stage4 落盘 {"translations": {key: 译文}, "glossary": {...}}；旧档/
+        # 测试夹具为平铺 {key: 译文}——两种都收。取不出内层时按平铺用，
+        # 再查不中则由 _translation_of 回退原文（失败方向=不译，绝不错配）
+        if isinstance(raw, dict):
+            inner = raw.get("translations")
+            translations = inner if isinstance(inner, dict) else raw
     total_pages = max((b.get("page_idx", 0) + 1 for b in content_list), default=0)
     body_start, body_end = s3._body_range(structure, total_pages)
     meta = structure.get("metadata", {})
-    zh = meta.get("language", "zh") == "zh"
+    zh = zh_override if zh_override is not None else meta.get("language", "zh") == "zh"
 
     def _extra_units(entries: list, default_label: str) -> list:
         """前页/后页（前言、版权页、附录等 keep=true 条目）→ 单元。
@@ -659,6 +673,11 @@ def export_markdown(units: list, out_dir: Path, book_name: str, title: str,
         bundle.mkdir(parents=True, exist_ok=True)
         _copy_images(images_dir, bundle)
         chapters_dir = bundle / "chapters"
+        # 整目录清写：章题在两次导出间可能变化（译文/结构重判），残留旧章
+        # 文件会与新疆文件混排（061 实测：trans 目录里英文章名与中文章名
+        # 并存）。chapters/ 是导出器自有产物，清空后全量重写
+        if chapters_dir.is_dir():
+            shutil.rmtree(chapters_dir)
         chapters_dir.mkdir(exist_ok=True)
         index_lines = [front, f"\n## {_TOC_LABEL.get(lang, 'Contents')}\n"]
         idx = 0
@@ -783,13 +802,17 @@ def export_tex(units: list, out_dir: Path, book_name: str, title: str,
 def export_book(work_dir: str | Path, formats: set[str], *,
                 md_split: bool = False, md_dialect: str = "gfm",
                 tex_full: bool = True, export_lang: str = "auto",
-                progress=None) -> dict:
-    """导出编排：按语言选项构建单元（原文/译文/双出），按形态写产物。"""
+                trans_lang: str = "zh", progress=None) -> dict:
+    """导出编排：按语言选项构建单元（原文/译文/双出），按形态写产物。
+
+    命名口径（病例 062 用户裁定）：原文产物恒为原名直出，译文产物恒带
+    语言后缀——<书名>.md / <书名>_cn.md、<书名>_md/ / <书名>_cn_md/，
+    EPUB 侧同口径（pipeline 内实现）。后缀映射见 LANG_SUFFIX。
+    """
     _report = progress or (lambda *a, **kw: None)
     work_dir = Path(work_dir)
     structure = json.loads((work_dir / "structure.json").read_text(encoding="utf-8"))
     meta = structure.get("metadata", {})
-    title = meta.get("title") or work_dir.name
     author = ", ".join(meta.get("authors", []) or [])
     book_lang = meta.get("language", "zh") or "zh"
 
@@ -798,12 +821,21 @@ def export_book(work_dir: str | Path, formats: set[str], *,
              else ["trans"] if export_lang in ("auto", "trans") and has_trans
              else ["orig"])
 
+    # 命名（062）：原文 = 原书名直出；译文 = 原书名 + 语言后缀。
+    # 文件名一律用原文书名（译文展示标题另用 title_zh）
+    title_orig = meta.get("title") or work_dir.name
+    title_disp = meta.get("title_zh") or title_orig
+    suf = LANG_SUFFIX.get(trans_lang, trans_lang)
+
     produced: dict[str, list] = {}
     for lang in langs:
-        units = build_units(work_dir, use_translations=(lang == "trans"))
-        suffix = "_原文" if (lang == "orig" and "trans" in langs) else \
-                 "" if lang == "trans" or not has_trans else ""
-        name = _safe_stem(f"{title}{suffix}")
+        is_trans = lang == "trans"
+        units = build_units(
+            work_dir, use_translations=is_trans,
+            zh_override=(trans_lang == "zh") if is_trans else None)
+        name = _safe_stem(f"{title_orig}_{suf}" if is_trans else title_orig)
+        disp = title_disp if is_trans else title_orig
+        unit_lang = trans_lang if is_trans else book_lang
         images_dir = ""
         for eng in (structure.get("engine") or "", "vlm", "mineru", "paddleocr"):
             if eng and (work_dir / eng).is_dir():
@@ -812,12 +844,12 @@ def export_book(work_dir: str | Path, formats: set[str], *,
         if "md" in formats:
             _report(f"导出 Markdown（{lang}）…", None)
             produced.setdefault("md", []).extend(export_markdown(
-                units, work_dir, name, title, images_dir,
-                split=md_split, dialect=md_dialect, lang=book_lang))
+                units, work_dir, name, disp, images_dir,
+                split=md_split, dialect=md_dialect, lang=unit_lang))
         if "tex" in formats:
             _report(f"导出 TeX（{lang}）…", None)
             produced.setdefault("tex", []).extend(export_tex(
-                units, work_dir, name, title, images_dir,
-                full=tex_full, lang=book_lang, author=author))
+                units, work_dir, name, disp, images_dir,
+                full=tex_full, lang=unit_lang, author=author))
     logger.info(f"  导出完成: {{{', '.join(f'{k}: {len(v)}' for k, v in produced.items())}}}")
     return produced

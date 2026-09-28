@@ -291,15 +291,53 @@ class TestExportBookLang(unittest.TestCase):
         td = self._mk_workdir(with_trans=True)
         r = export_book(td, {"md"}, export_lang="both")
         names = [p.name for p in r["md"]]
-        self.assertIn("测试书_原文.md", names)
+        # 062 命名口径：原文直出原名，译文带语言后缀
         self.assertIn("测试书.md", names)
+        self.assertIn("测试书_cn.md", names)
+        # 平铺整 sid 键命中：译文进 trans 产物，原文产物不受影响
+        orig = [p for p in r["md"] if p.name == "测试书.md"][0]
+        trans = [p for p in r["md"] if p.name == "测试书_cn.md"][0]
+        self.assertIn("译文。", trans.read_text(encoding="utf-8"))
+        self.assertNotIn("译文。", orig.read_text(encoding="utf-8"))
         # auto：有译文用译文
         r2 = export_book(td, {"md"}, export_lang="auto")
-        self.assertEqual([p.name for p in r2["md"]], ["测试书.md"])
+        self.assertEqual([p.name for p in r2["md"]], ["测试书_cn.md"])
         # orig
         r3 = export_book(td, {"md"}, export_lang="orig")
         self.assertEqual([p.name for p in r3["md"]], ["测试书.md"])
         self.assertIn("正文。", r3["md"][0].read_text(encoding="utf-8"))
+
+    def test_nested_translations_shape(self):
+        # stage4 真实落盘 {"translations": {key: 译文}, "glossary": {...}}；
+        # build_units 曾按平铺直读 → 译文导出静默退回原文（病例 061）
+        td = self._mk_workdir(with_trans=False)
+        (td / "translations.json").write_text(json.dumps(
+            {"translations": {"t:1": "译文。"}, "glossary": {"Drude": "德鲁德"}}),
+            encoding="utf-8")
+        r = export_book(td, {"md"}, export_lang="both")
+        orig = [p for p in r["md"] if p.name == "测试书.md"][0]
+        trans = [p for p in r["md"] if p.name == "测试书_cn.md"][0]
+        self.assertIn("译文。", trans.read_text(encoding="utf-8"))
+        self.assertNotIn("译文。", orig.read_text(encoding="utf-8"))
+
+    def test_both_split_gives_two_named_bundles(self):
+        # 062：双出 + 分章 → 两个命名 bundle（原文 _md / 译文 _cn_md），
+        # 交付层据此分仓，不再平铺互覆
+        td = self._mk_workdir(with_trans=True)
+        r = export_book(td, {"md"}, md_split=True, export_lang="both")
+        names = sorted(p.name for p in r["md"])
+        self.assertEqual(names, ["测试书_cn_md", "测试书_md"])
+
+    def test_split_export_cleans_stale_chapters(self):
+        # 分章导出整目录清写：两次导出间章题变化（如译文介入）不留旧章文件
+        td = self._mk_workdir(with_trans=False)
+        r1 = export_book(td, {"md"}, md_split=True)
+        bundle = r1["md"][0]
+        stale = bundle / "chapters" / "99-残留旧章.md"
+        stale.write_text(" stale ", encoding="utf-8")
+        r2 = export_book(td, {"md"}, md_split=True)
+        self.assertFalse(stale.exists())
+        self.assertTrue((r2["md"][0] / "chapters").is_dir())
 
     def test_images_dir_shipped_with_products(self):
         # images/ 落在工作目录与产物同邻；produced 只报文件/目录本体，

@@ -79,6 +79,7 @@ export const S = {
     texFull: "完整 TeX 文档",
     texFullDesc: "关闭则只产片段（可直接 \\input；片段不能直接编译）",
     exportLang: "导出语言",
+    exportLangDesc: "EPUB / Markdown / TeX 同口径生效；双出时译文文件名带语言后缀",
     exportLangAuto: "自动（有译文用译文）",
     exportLangOrig: "仅原文",
     exportLangTrans: "仅译文",

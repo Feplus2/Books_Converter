@@ -182,8 +182,11 @@ export function buildCliArgs(o: ConvertOptions): string[] {
   }
   if (o.formats.includes("tex")) {
     if (!o.texFull) args.push("--tex-fragment");
-    if (o.exportLang !== "auto") args.push("--export-lang", o.exportLang);
   }
+  // 导出语言对 EPUB/MD/TeX 同口径生效（病例 062）：跟翻译开关走，
+  // 不再嵌进 tex 分支（061：只选 md 时曾被静默丢弃）
+  if (o.translate && o.exportLang !== "auto")
+    args.push("--export-lang", o.exportLang);
   if (o.translate) args.push("--translate", o.translateLang || "zh");
   return args;
 }

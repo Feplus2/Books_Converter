@@ -2115,3 +2115,96 @@
 - **状态**：已修复并验证。wiki/05 新增「Tauri GUI 发布链」段、wiki/08
   M4 标记落地、RELEASE_NOTES 升级提示改写实至发布物、README 快速开始
   对齐绿色 zip 形态。不 push、不 tag、不发 release。
+
+## 病例 061｜Solid State Physics / 系统层+GUI — 翻译选项三路丢失（选了翻译产出原文）
+
+- **现象**：生产端（v2.0.0 安装版）勾了「翻译 + 导出语言自动」，产物全英文，
+  日志无 Stage 4；登记处 `translate: null`。
+- **根因链**（三个独立问题叠加，前两个任何一个都足以致病）：
+  1. **GUI 队列快照失联**：`queue.ts add()` 入队即冻结 `options` 副本，
+     之后在转换页拨的开关只写 `settings.defaults`，不回传已入队任务；
+     队列卡片也不显示各任务生效选项。用户拖入 PDF 后才开翻译 →
+     `buildCliArgs` 拿不到 → pipeline 收到的 start 事件 `translate:false`
+     + `stage_bounds` 3 段（`%APPDATA%\com.booksconverter.app\logs\
+     gui-Solid_State_Physics_*-1790427240.log` 铁证；settings.json 里
+     defaults.translate=true 证明用户确实选了）。
+  2. **导出层译文解包错位**：`stage4_translate` 落盘 translations.json 为
+     嵌套 `{"translations": {…}, "glossary": {…}}`，而
+     `stage3_export.build_units` 按平铺 `{key: 译文}` 直读 → 全字典查询
+     永不命中 → `_translation_of` 回退原文。EPUB 走内存内层字典不受影响
+     ——所以即便 --translate 到位，也只会出现「EPUB 有译文、md/tex 全
+     原文」的半翻译产物。测试夹具按平铺写，与真实落盘异构，一直没暴露。
+  3. **分章导出不清旧章**：`export_markdown` split 模式只写不扫，两次导出
+     间章题变化（原文↔译文）→ 新旧章文件混排（实测 trans 目录里
+     `36-32_Electron_Interactions…md` 与 `36-32_电子相互作用与磁结构.md`
+     并存）。
+- **修补**：
+  - stage3_export.py `build_units`：translations.json 嵌套/平铺两形兼容
+    （取不出内层按平铺用，再不中回退原文——失败方向=不译，绝不错配）；
+  - stage3_export.py `export_markdown`：split 模式 chapters/ 整目录清写；
+  - stage3_epub.py `_translation_of`：增整串 source_id 键（置于 rsplit
+    尾段键之前，stage4 键恒为 content_list 索引，无误配面）。
+  - gui/src/lib/settings.ts `buildCliArgs`：`--export-lang` 移出 tex 分支，
+    formats 含 md 或 tex 且非 auto 即下发（export_lang 对 md/tex 同口径，
+    原嵌套只选 md 时静默丢开关）；Convert.tsx「导出语言」控件同口径改为
+    选 md 或 tex 即显示（原仅 tex）。
+  - gui/src/lib/queue.ts 队列选项语义（用户裁定 061）：**任务未点火前跟随
+    settings.defaults，起跑瞬间（pump）定稿写回 task.options 锁死**；
+    「再次转换」入队 optionsPinned=true 钉死重放登记选项（Library.tsx）。
+    startAll 预检/引擎汇总改按 effectiveOptions 取值；输出目录兜底移入
+    pump（各任务起跑瞬间执行）；QueueItem 对未点火任务显示将生效的引擎。
+    副作用：startAll→pump 去掉了兜底 await，retry 后同步点火（054 测试
+    时序断言已按新时序校准）。
+- **回归**：tests/test_stage3_export.py +3 例（嵌套形态译文进 trans 产物/
+  平铺整 sid 键命中/chapters 清写）→ 32/32；AGENTS 强制链 Python 全绿；
+  GUI vitest 86/86（settings-env +1 例：md-only 非 auto 也下发
+  --export-lang，epub-only 不下发；case061-live-options +3 例：起跑取
+  当下 defaults/钉死不跟随/后续车各自起跑取值；case054 时序校准）、
+  tsc 绿。
+  真书 Solid State Physics（848 页 mineru 缓存）：8114 条全译（含 36 条
+  断点续翻补漏），`export_lang=both` 双出 41+41 章，读产物验收——中文章
+  题/译文正文/公式编号 (20.1)/脚注锚 [^1] 俱全，原文套纯英文；双语 zip
+  96.3MB 交付。structure.json 已按 pipeline 同口径回填 title=固态物理学、
+  language=zh（原档备份 structure.json.bak-pre-translate）。
+- **状态**：已全部修复并验证（导出层 + --export-lang 嵌套 + 队列语义，
+  语义方案经用户裁定：未点火任务按当下设置执行，起跑即锁死）。
+
+## 病例 062｜Born a Crime / 系统层+GUI — 双出语义塌方：md 平铺互覆、EPUB 无双出、命名失锚
+
+- **现象**（用户实机报告）：开翻译 + 三格式 + 分章 md + 导出语言双出，
+  交付目录 `md/` 里只剩译文一套；EPUB 只有译文版；tex 两本但译文沿用
+  英文书名（而 EPUB 是中文书名）；导出语言开关只在选 tex 时出现，
+  EPUB 无此选项。
+- **根因链**（四处）：
+  1. 交付层 `_deliver` 把目录型产物**平铺**进 `md/`——双出时两个 bundle
+     （原文/译文）先后平铺互覆，后者吃掉前者的 index.md/chapters，登记处
+     出现 `"md": [md, md]` 同径两条；
+  2. EPUB 根本不接 export_lang：`generate_epub` 单次调用，无双出概念；
+  3. 文件名锚定错乱：pipeline Stage 4 把 `metadata.title` 原地改写成
+     译名且**不落盘**，EPUB（内存结构）用译名、export_book（重读磁盘）
+     用原名 → 同书三格式命名各说各话；
+  4. GUI「导出语言」按格式门控（原仅 tex，061 后 md/tex），用户预期
+     它对 EPUB 同样生效。
+- **修补**（命名口径用户裁定：**原文恒 `<书名>` 直出，译文恒带语言后缀**
+  zh→_cn / ja→_jp / en→_en，文件名一律以原文书名为基准）：
+  - stage3_epub.py `generate_epub`：新增 `stem` 文件名覆写参数；
+  - pipeline.py：Stage 4 不再改写 `metadata.title`，译名存 `title_zh`
+    并 `save_structure` 落盘；EPUB 按 export_lang 双出（译文侧用
+    meta_t 覆写展示标题/语言）；`_deliver` 多目录产物按 bundle 名分仓
+    （单产物照旧平铺，兼容 v2.0.0 布局）；`--export-lang` help 同步；
+  - stage3_export.py：`export_book` 新增 `trans_lang`，命名统一切到
+    原书名+后缀；`build_units` 新增 `zh_override`——译文标点按目标
+    语言定，与原文语言解耦（原先把 metadata.language 改成 zh 的副作用
+    一并消除）；
+  - GUI：「导出语言」移到「翻译」开关下（开翻译即显示，与格式无关）；
+    `buildCliArgs` 改为 `translate && 非 auto` 即下发，不再按格式门控。
+- **回归**：tests/test_stage3_export.py 命名断言全量切新口径 +1 例
+  （双出分章两命名 bundle）→ 33/33；AGENTS 强制链 Python 全绿；
+  GUI vitest 86/86（settings-env 改写：跟翻译开关走、epub-only 也下发）、
+  tsc 绿。**真书端到端**（Born a Crime，431 页，--skip-mineru
+  --skip-deepseek --translate zh 缓存续翻）：交付树 = epub/原文.epub +
+  原文_cn.epub、md/<书名>_md/ + <书名>_cn_md/、tex 双份；读产物——
+  原文 EPUB 英文 nav/正文，译文 EPUB 中文 nav（生来有罪：南非童年故事/
+  第一部分/奔跑）/中文正文，md 两 bundle 章节语种各自正确；QC 🟢。
+- **状态**：已修复并验证（dev 实例 CDP 9224 在跑，GUI 改动热重载生效，
+  待用户验收）。

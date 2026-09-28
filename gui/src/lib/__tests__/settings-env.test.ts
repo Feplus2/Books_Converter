@@ -111,4 +111,23 @@ describe("buildCliArgs / engineOf", () => {
     expect(args).toContain("--export-lang both");
     expect(args).toContain("--translate en");
   });
+
+  it("导出语言跟翻译开关走、与格式无关（061/062）", () => {
+    // 061：原先嵌在 tex 分支，只选 md 时被静默丢弃；
+    // 062：EPUB 也吃 export_lang → 不再按格式门控，开翻译即下发
+    const s = base();
+    const mdOnly = {
+      ...s.defaults,
+      outputDir: "F:/out",
+      formats: ["epub", "md"],
+      translate: true,
+      exportLang: "orig" as const,
+    };
+    expect(buildCliArgs(mdOnly).join(" ")).toContain("--export-lang orig");
+    const epubOnly = { ...mdOnly, formats: ["epub"], exportLang: "both" as const };
+    expect(buildCliArgs(epubOnly).join(" ")).toContain("--export-lang both");
+    // 没开翻译：无译文可导，不下发（auto 是默认值也不下发）
+    const noTrans = { ...mdOnly, translate: false };
+    expect(buildCliArgs(noTrans).join(" ")).not.toContain("--export-lang");
+  });
 });

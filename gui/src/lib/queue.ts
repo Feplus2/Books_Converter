@@ -1,5 +1,8 @@
 // 转换队列：模块级 store（跨页面存活）。拖入只入队为「待开始」，点【开始转换】才开跑；
 // 并发上限 1，开跑后自动接力，跑空自动熄火（再次拖入需重新点开始）。
+// 选项语义（061 用户裁定）：任务未点火前跟随 settings.defaults，起跑瞬间
+// 定稿锁死（pump 写回 task.options）；「再次转换」入队时 optionsPinned=true
+// 钉死，重放当时登记选项。
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
@@ -9,6 +12,7 @@ import {
   buildEnv,
   settingsStore,
   type ConvertOptions,
+  type Settings,
 } from "./settings";
 import { precheckTask } from "./precheck";
 import { startSummaryText } from "./start-summary";
@@ -34,6 +38,10 @@ export interface QueueTask {
   pdfPath: string;
   title: string;
   options: ConvertOptions;
+  /** true=选项钉死（「再次转换」重放当时的登记选项）；false=未点火前跟随
+      settings.defaults——起跑瞬间取当下选项（病例 061 用户裁定：任务未开始，
+      开始就按当下设置执行；一旦起跑即锁死） */
+  optionsPinned: boolean;
   status: TaskStatus;
   percent: number;
   stage: number | null;
@@ -64,6 +72,15 @@ type Listener = () => void;
 const STALL_MS = 3 * 60 * 1000;
 const CANCEL_WATCHDOG_MS = 6000;
 
+/** 任务实际应执行的选项：钉死任务用入队快照，其余跟随当下 defaults。
+    仅在「预检/汇总/起跑」时点取值；起跑瞬间由 pump 写回 task.options 锁死 */
+export function effectiveOptions(
+  task: Pick<QueueTask, "options" | "optionsPinned">,
+  settings: Settings,
+): ConvertOptions {
+  return task.optionsPinned ? task.options : settings.defaults;
+}
+
 let seq = 0;
 
 class QueueStore {
@@ -78,7 +95,7 @@ class QueueStore {
     setInterval(() => this.checkStall(), 30_000);
   }
 
-  add(paths: string[], options: ConvertOptions, highlight = false) {
+  add(paths: string[], options: ConvertOptions, highlight = false, optionsPinned = false) {
     for (const pdfPath of paths) {
       const name = pdfPath.split(/[\\/]/).pop() ?? pdfPath;
       this.tasks.push({
@@ -86,6 +103,7 @@ class QueueStore {
         pdfPath,
         title: name.replace(/\.pdf$/i, ""),
         options: { ...options, formats: [...options.formats] },
+        optionsPinned,
         status: "queued",
         percent: 0,
         stage: null,
@@ -113,16 +131,16 @@ class QueueStore {
     return this.tasks.some((t) => t.status === "queued");
   }
 
-  /** 【开始转换】：预检 → 输出目录兜底 → 点火 → 接力 */
+  /** 【开始转换】：预检 → 点火 → 接力（输出目录兜底在各任务起跑瞬间） */
   async startAll() {
     const settings = settingsStore.settings;
-    let defaultDir = "";
     for (const task of this.tasks) {
       if (task.status !== "queued") continue;
       // ① 缺 key 预检：卡片置错误态（不依赖一瞬即逝的 toast）+ 人话指明缺
       // 哪个 key + 去设置；该项不再进 pump（旧版 continue 后 hasQueued 仍含
-      // 它，会被 pump 以无 key 状态照样起跑——"没反应"的直接来源）
-      const check = precheckTask(task.options, settings);
+      // 它，会被 pump 以无 key 状态照样起跑——"没反应"的直接来源）。
+      // 未钉死任务按当下 defaults 预检（与起跑瞬间取值同口径）
+      const check = precheckTask(effectiveOptions(task, settings), settings);
       if (!check.ok) {
         task.status = "error";
         task.error = S.convert.toastMissingKey(check.missing);
@@ -139,25 +157,18 @@ class QueueStore {
         });
         continue;
       }
-      // ② 输出目录兜底：为空则用默认建议值并告知（拖入永不拦截）
-      if (!task.options.outputDir.trim()) {
-        if (!defaultDir) {
-          defaultDir = await invoke<string>("default_output_dir").catch(() => "");
-        }
-        if (defaultDir) {
-          task.options.outputDir = defaultDir;
-          notify.info(S.convert.toastDefaultDir(defaultDir));
-        }
-      }
     }
     if (!this.hasQueued()) {
       this.emit();
       return;
     }
-    // ③ 起跑前引擎汇总可见（病例 052：入队即快照选项，点火前明示将用哪个引擎）
+    // ② 起跑前引擎汇总可见（病例 052：入队即快照选项，点火前明示将用哪个引擎；
+    // 061 起未钉死任务按当下 defaults 汇总）
     notify.info(
       startSummaryText(
-        this.tasks.filter((t) => t.status === "queued").map((t) => t.options),
+        this.tasks
+          .filter((t) => t.status === "queued")
+          .map((t) => effectiveOptions(t, settings)),
       ),
     );
     this.started = true;
@@ -208,6 +219,21 @@ class QueueStore {
 
     const settings = settingsStore.settings;
     try {
+      // 起跑瞬间定稿：未钉死任务取当下 defaults（061 用户裁定），写回
+      // task.options 锁死——此后卡片/重试/日志所见即实际执行选项
+      const eff = { ...effectiveOptions(task, settings) };
+      // 输出目录兜底：为空则用默认建议值并告知（拖入永不拦截）
+      if (!eff.outputDir.trim()) {
+        const d = await invoke<string>("default_output_dir").catch(() => "");
+        if (d) {
+          eff.outputDir = d;
+          notify.info(S.convert.toastDefaultDir(d));
+        }
+      }
+      eff.formats = [...eff.formats];
+      task.options = eff;
+      task.stagesTotal = eff.translate ? 4 : 3;
+      this.emit();
       await invoke("start_conversion", {
         id: task.id,
         pdf: task.pdfPath,
@@ -303,9 +329,10 @@ class QueueStore {
   }
 
   /**
-   * 【重试】失败/已取消任务：就地重置回 queued（不新建卡片，选项快照原样
-   * 保留），随后走 startAll 标准路径——052 预检/输出目录兜底/引擎汇总照旧
-   * 生效（预检不过会重新置 error，不会带病起跑）。其他状态一律不动作
+   * 【重试】失败/已取消任务：就地重置回 queued（不新建卡片），随后走
+   * startAll 标准路径——052 预检/引擎汇总照旧生效（预检不过会重新置
+   * error，不会带病起跑）。选项按 061 语义：钉死任务保留入队快照，
+   * 未钉死任务在起跑瞬间重新取当下 defaults。其他状态一律不动作
    * （铁律 0）。
    */
   retry(id: string) {

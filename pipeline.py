@@ -195,7 +195,8 @@ def main():
         "--export-lang",
         choices=["auto", "orig", "trans", "both"],
         default="auto",
-        help="导出语言：auto=有译文用译文；orig=原文；trans=译文；both=双出（默认 auto）",
+        help="导出语言（EPUB/MD/TeX 同口径）：auto=有译文用译文；orig=原文；"
+             "trans=译文；both=原文+译文双出（译文文件名带语言后缀，默认 auto）",
     )
     parser.add_argument(
         "--max-pages",
@@ -394,9 +395,13 @@ def main():
                 )
                 translations = result["translations"]
                 if result.get("title_zh"):
-                    structure["metadata"]["title"] = result["title_zh"]
-                if args.translate == "zh":
-                    structure["metadata"]["language"] = "zh"
+                    # 书名保持原文（产物文件名/原文产物都以它为基准），
+                    # 译文标题存 title_zh（病例 062 命名口径）
+                    structure["metadata"]["title_zh"] = result["title_zh"]
+                # 落盘：导出层 export_book 从磁盘重读 structure.json，
+                # 不落盘则 md/tex 看不到 title_zh（062 实测 EPUB 中文名、
+                # tex 英文名的不一致来源）
+                save_structure(structure, str(work_dir))
             except Exception as e:
                 logger.error(f"Stage 4 翻译失败: {e}，将输出原文 EPUB")
                 translations = None
@@ -410,17 +415,42 @@ def main():
         root_exports: list[Path] = []   # 根级原始导出（交付成功后清理）
         deliver_ok = False
         try:
-            epub_path = generate_epub(
-                book_name,
-                mineru_info,
-                structure,
-                str(work_dir),
-                pdf_path=str(pdf_path),
-                translations=translations,
-            )
-            root_exports.append(Path(epub_path))
+            # 导出语言同口径作用于 EPUB（病例 062 用户裁定：三格式一视同仁，
+            # 双出 = 原文 + 译文各一份；译文文件名带语言后缀）
+            meta = structure.get("metadata", {})
+            title_orig = meta.get("title") or book_name
+            has_trans = translations is not None
+            if args.export_lang == "both" and has_trans:
+                epub_langs = ["orig", "trans"]
+            elif args.export_lang == "orig" or not has_trans:
+                epub_langs = ["orig"]
+            else:  # auto/trans：有译文出译文
+                epub_langs = ["trans"]
+            from stage3_export import LANG_SUFFIX
+            suf = LANG_SUFFIX.get(args.translate or "", args.translate or "")
+            epub_paths: list[Path] = []
+            for elang in epub_langs:
+                if elang == "trans":
+                    # 译文版：展示标题/正文用译文，元数据语言=目标语言
+                    meta_t = {**meta,
+                              "title": meta.get("title_zh") or title_orig,
+                              "language": args.translate or meta.get("language", "zh")}
+                    ep = generate_epub(
+                        book_name, mineru_info, {**structure, "metadata": meta_t},
+                        str(work_dir), pdf_path=str(pdf_path),
+                        translations=translations, stem=f"{title_orig}_{suf}",
+                    )
+                else:
+                    ep = generate_epub(
+                        book_name, mineru_info, structure,
+                        str(work_dir), pdf_path=str(pdf_path),
+                        translations=None, stem=title_orig,
+                    )
+                epub_paths.append(Path(ep))
+                root_exports.append(Path(ep))
             # 复制产物到输出目录：<输出>/<书名>/<格式>/ 每格式自含子目录
-            # （md/tex 含 images/；分章 md 目录内容平铺进格式目录）
+            # （md/tex 含 images/；单一分章 md 平铺进格式目录，多语言双出
+            # 时各语言按 bundle 名分仓，互不平铺覆盖——病例 062）
             import shutil
 
             deliver_name = _unique_book_dir(output_base, book_name)
@@ -431,18 +461,26 @@ def main():
                 tgt = output_base / deliver_name / fmt
                 tgt.mkdir(parents=True, exist_ok=True)
                 delivered: list[str] = []
+                flatten = len(paths) <= 1  # 双出多分仓，单产物照旧平铺
                 for p in paths:
                     p = Path(p)
                     if p.is_dir():
-                        for child in p.iterdir():
-                            dst = tgt / child.name
-                            if child.is_dir():
-                                if dst.exists():
-                                    shutil.rmtree(dst)
-                                shutil.copytree(child, dst)
-                            else:
-                                shutil.copy2(child, dst)
-                        delivered.append(str(tgt))
+                        if flatten:
+                            for child in p.iterdir():
+                                dst = tgt / child.name
+                                if child.is_dir():
+                                    if dst.exists():
+                                        shutil.rmtree(dst)
+                                    shutil.copytree(child, dst)
+                                else:
+                                    shutil.copy2(child, dst)
+                            delivered.append(str(tgt))
+                        else:
+                            dst = tgt / p.name
+                            if dst.exists():
+                                shutil.rmtree(dst)
+                            shutil.copytree(p, dst)
+                            delivered.append(str(dst))
                     else:
                         dst = tgt / p.name
                         if p != dst:
@@ -459,9 +497,12 @@ def main():
                         shutil.copytree(src_images, dst)
                 return delivered
 
-            epub_path = Path(_deliver("epub", [epub_path], with_images=False)[0])
-            logger.info(f"  EPUB 已复制到: {epub_path}")
-            products["epub"] = [str(epub_path)]
+            epub_delivered = _deliver("epub", [str(p) for p in epub_paths],
+                                      with_images=False)
+            # 汇总/协议路径用译文版（双出时用户最可能要看的那本）
+            epub_path = Path(epub_delivered[-1])
+            logger.info(f"  EPUB 已复制到: {epub_delivered}")
+            products["epub"] = epub_delivered
             # ── 平行导出（Markdown/TeX，--format 多选）──
             extra_formats = {f.strip() for f in str(args.formats).split(",")} - {"epub", ""}
             export_ok = True
@@ -472,6 +513,7 @@ def main():
                         str(work_dir), extra_formats,
                         md_split=args.md_split, md_dialect=args.md_dialect,
                         tex_full=args.tex_full, export_lang=args.export_lang,
+                        trans_lang=args.translate or "zh",
                         progress=lambda d, f=None: pw.update_stage(s_epub, "EPUB 生成", d, f),
                     )
                     for fmt, paths in produced.items():

@@ -37,7 +37,7 @@ function reconvertItem(item: RegistryItem, settings: Settings) {
     },
     settings,
   );
-  queueStore.add([item.source_pdf], options, true);
+  queueStore.add([item.source_pdf], options, true, true);
   navigate({ page: "convert" });
   notify.success(S.library.toastReconvert(item.engine));
   if (modelFallback) {

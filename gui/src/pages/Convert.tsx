@@ -333,6 +333,24 @@ export function ConvertPage() {
           </div>
         </Field>
 
+        {opts.translate && (
+          <Field label={S.convert.exportLang} desc={S.convert.exportLangDesc}>
+            <Select
+              width={200}
+              value={opts.exportLang}
+              onChange={(v) =>
+                setOpts({ exportLang: v as ConvertOptions["exportLang"] })
+              }
+              options={[
+                { value: "auto", label: S.convert.exportLangAuto },
+                { value: "orig", label: S.convert.exportLangOrig },
+                { value: "trans", label: S.convert.exportLangTrans },
+                { value: "both", label: S.convert.exportLangBoth },
+              ]}
+            />
+          </Field>
+        )}
+
         <Field label={S.convert.outputDir}>
           <div className="flex items-center gap-2">
             <span
@@ -413,26 +431,9 @@ export function ConvertPage() {
         )}
 
         {opts.formats.includes("tex") && (
-          <>
-            <Field label={S.convert.texFull} desc={S.convert.texFullDesc}>
-              <Toggle checked={opts.texFull} onChange={(v) => setOpts({ texFull: v })} />
-            </Field>
-            <Field label={S.convert.exportLang}>
-              <Select
-                width={200}
-                value={opts.exportLang}
-                onChange={(v) =>
-                  setOpts({ exportLang: v as ConvertOptions["exportLang"] })
-                }
-                options={[
-                  { value: "auto", label: S.convert.exportLangAuto },
-                  { value: "orig", label: S.convert.exportLangOrig },
-                  { value: "trans", label: S.convert.exportLangTrans },
-                  { value: "both", label: S.convert.exportLangBoth },
-                ]}
-              />
-            </Field>
-          </>
+          <Field label={S.convert.texFull} desc={S.convert.texFullDesc}>
+            <Toggle checked={opts.texFull} onChange={(v) => setOpts({ texFull: v })} />
+          </Field>
         )}
       </div>
 

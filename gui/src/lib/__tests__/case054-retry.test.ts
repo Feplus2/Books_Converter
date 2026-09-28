@@ -49,7 +49,9 @@ describe("queueStore.retry 重试状态流转", () => {
     task.exitCode = 1;
 
     queue.retry(task.id);
-    expect(task.status).toBe("queued");
+    // 061 后 startAll→pump 同步点火（startAll 已无输出目录兜底的 await），
+    // retry 返回时任务可能已 running——重置字段的断言不受时序影响
+    expect(["queued", "running"]).toContain(task.status);
     // 运行态字段全部复位
     expect(task.percent).toBe(0);
     expect(task.stage).toBeNull();
@@ -77,7 +79,8 @@ describe("queueStore.retry 重试状态流转", () => {
     const task = queue.tasks[0];
     task.status = "cancelled";
     queue.retry(task.id);
-    expect(task.status).toBe("queued");
+    // 同 061 时序说明：retry 返回时可能已同步点火
+    expect(["queued", "running"]).toContain(task.status);
     await flush();
     expect(task.status).toBe("running");
   });

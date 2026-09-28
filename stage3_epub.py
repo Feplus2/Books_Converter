@@ -609,8 +609,10 @@ def _translation_of(block: dict, translations: dict | None) -> str | None:
     if not translations:
         return None
     sid = str(block.get("source_id", ""))
+    zh = translations.get(sid)
     key = sid.rsplit(":", 1)[-1]
-    zh = translations.get(key)
+    if zh is None:
+        zh = translations.get(key)
     if zh is None and ("." in key):
         zh = translations.get(key.split(".")[0])
     if zh is None:
@@ -1515,6 +1517,7 @@ def generate_epub(
     output_dir: str,
     pdf_path: str = "",
     translations: dict = None,
+    stem: str = "",
 ) -> Path:
     """
     生成 EPUB 文件。
@@ -1526,6 +1529,8 @@ def generate_epub(
         output_dir: 输出目录
         pdf_path: 源 PDF 路径（用于提取封面）
         translations: Stage 4 输出 {key: 译文}（可选，提供时正文/前后页用译文渲染）
+        stem: 输出文件名覆写（不带 .epub；双出时译文侧加语言后缀用，
+              空则沿用元数据标题）
     """
     logger.info("Stage 3 开始: 生成 EPUB")
 
@@ -1824,7 +1829,7 @@ def generate_epub(
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
 
-    epub_path = Path(output_dir) / f"{_sanitize_filename(title)}.epub"
+    epub_path = Path(output_dir) / f"{_sanitize_filename(stem or title)}.epub"
     # epub3_pages 关闭：本管线不生成 pagebreak 锚点，开启时 ebooklib 会把
     # 脚注回链（<a epub:type="noteref" id="fnref_N">）误收进 page-list，
     # nav.xhtml 混入 fnref_* 条目（病例 Feeling Great）

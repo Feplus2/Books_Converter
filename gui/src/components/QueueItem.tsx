@@ -12,9 +12,9 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { queueStore, type QueueTask } from "../lib/queue";
+import { queueStore, effectiveOptions, type QueueTask } from "../lib/queue";
 import { notify } from "../lib/notify";
-import { engineOf } from "../lib/settings";
+import { engineOf, settingsStore } from "../lib/settings";
 import { S, engineName, formatElapsed } from "../lib/strings";
 import { Badge } from "./Badge";
 import { ProgressBar } from "./ProgressBar";
@@ -62,7 +62,17 @@ export function QueueItem({ task }: { task: QueueTask }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-medium">{task.title}</span>
-            <Badge tone="muted">{engineName(engineOf(task.options))}</Badge>
+            <Badge tone="muted">
+              {engineName(
+                engineOf(
+                  // 未点火的未钉死任务显示将实际生效的引擎（当下 defaults），
+                  // 起跑/钉死任务显示已锁定的快照
+                  task.status === "queued"
+                    ? effectiveOptions(task, settingsStore.settings)
+                    : task.options,
+                ),
+              )}
+            </Badge>
             <StatusBadge task={task} />
             {task.elapsed != null && (
               <span className="mono text-xs" style={{ color: "var(--ink2)" }}>

@@ -110,3 +110,6 @@ outline 来源时是扫描页）、`toc_source`（'outline'|None——outline �
   原文（病例 020：缺号静默收编导致整批错位并经续翻缓存扩散）。
 - `translations.json` 断点续翻按 content_list 索引对齐——**引擎缓存不变
   才可续翻**；结构重跑若改变了块集合，先删 translations.json 再跑。
+- 落盘形态 `{"translations": {key: 译文}, "glossary": {…}}`（嵌套）；导出层
+  （stage3_export.build_units）嵌套/平铺两形兼容读取，查无译文回退原文
+  （病例 061：曾按平铺直读 → md/tex 译文导出静默退回原文）。
