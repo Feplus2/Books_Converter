@@ -54,7 +54,10 @@
 - FIXLOG.md 登记病例（现象 → 根因链 → 修补点（文件：函数）→ 回归证据 →
   状态），编号顺延；挂账问题也要登记。
 - 语义/规则变化同步更新 `wiki/` 对应页。
-- 版本号只改 `version.py`；sidecar 重打与部署见 `wiki/05-build-release.md`。
+- 版本号：CLI 唯一版本源是 `version.py`；**GUI 发版另需同步
+  `gui/src-tauri/tauri.conf.json` 与 `gui/package.json` 的 `version`**
+  （安装包文件名/版本号取自 tauri.conf.json——2.0.1 首次构建曾漏改，
+  产物名仍是 2.0.0 返工）；sidecar 重打与部署见 `wiki/05-build-release.md`。
 - **交付用户验收前，必须确认用户实际操作的实例已加载全部改动**：
   验收期默认走 dev 实例（`pnpm tauri dev`）——改完要重启该实例，
   并确认后端 sidecar 拉起的是仓库最新源码；无需打包。

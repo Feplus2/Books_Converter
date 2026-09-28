@@ -2,7 +2,9 @@
 
 ## 版本号
 
-`version.py` 的 `__version__` 是唯一版本源（GUI 与 CLI 共用）。
+`version.py` 的 `__version__` 是 CLI/管线唯一版本源。**GUI 发版时同步
+`gui/src-tauri/tauri.conf.json` 与 `gui/package.json` 的 `version`**
+（安装包文件名与关于页版本取自 tauri.conf.json，漏改则产物名沿用旧版）。
 改动发版级别修复时递增。
 
 发布稿文案：用户向 changelog 写在仓库根 `RELEASE_NOTES.md`（顶部加
