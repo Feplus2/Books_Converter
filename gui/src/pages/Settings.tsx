@@ -113,6 +113,13 @@ function ParseSection() {
           />
         </Row>
       </Group>
+      <Group title="DeepSeek OCR">
+        <Row label="DeepSeek OCR API Key">
+          <input className="input mono" type="password"
+            value={settings.ocr.deepseekOcrKey ?? ""}
+            onChange={(e) => setOcr({ deepseekOcrKey: e.target.value })} />
+        </Row>
+      </Group>
       <Group title={`${S.settings.secParse} · PaddleOCR`}>
         <div className="mb-1 flex items-center justify-between">
           <div className="text-xs" style={{ color: "var(--ink2)" }}>

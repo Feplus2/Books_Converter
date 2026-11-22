@@ -30,15 +30,16 @@ Tauri 2 + React 桌面 GUI（旧 tkinter GUI 冻结维护中，见[界面关系]
 
 ![手册页（暗色主题）：三步上手与两种模式怎么选](docs/images/convert-dark.png)
 
-## 三引擎
+## 解析引擎
 
 | 引擎 | 形态 | 定位 | 费用 |
 |---|---|---|---|
 | **MinerU** | 云端 OCR + 版面分析 API | 规则族主力：表格密集书最强（跨页表合并、rowspan 修正） | 免费 1000 页/日 |
+| **DeepSeek OCR** | 官方版面识别 API | 扫描书、区域裁图，复用 Hybrid 结构重建 | 1.5 元 / 千页，后处理另计 |
 | **PaddleOCR-VL** | 云端整页识别 API | 规则族备选：速度快、图注绑定准、每日额度高 | 免费 3000 页/天 |
 | **VLM** | 多模态大模型逐页直读（`stage1_vlm`：GLM 转写 + 脚注重建 + 同模型图片粗框 + 光栅重裁 + SQLite 断点续跑 + 目录先验） | 结构理解最好：脚注配对/版式语义是一等公民；配专用薄编排 Stage 2（`stage2_vlm`，不再让文本模型重打标视觉模型的判断） | GLM-4.6V-Flash 免费；GLM-5.3-Flash 约 3 元/本（400 页） |
 
-三引擎 Stage 1 产出同一套 MinerU 风格 `content_list` 契约（0–1000 千分位
+各引擎 Stage 1 产出同一套 MinerU 风格 `content_list` 契约（0–1000 千分位
 bbox），下游可选共用；但 Stage 2 分两个编排器——规则引擎走
 `stage2_hybrid`（它处理的就是烂输入，救援规则全在这边），VLM 走
 `stage2_vlm`（薄编排，信任优先 + 校验导向，目录先验直接作锚）。
@@ -121,11 +122,12 @@ cd gui && pnpm install && pnpm tauri dev
 .venv/Scripts/python.exe pipeline.py "D:\books\我的书.pdf"
 ```
 
-### 需要的 Key（都有免费额度）
+### 需要的 Key
 
 | Key | 获取 | 用途 |
 |---|---|---|
 | MinerU Token | https://mineru.net/apiManage/token | 规则族解析引擎（免费 1000 页/日） |
+| DeepSeek OCR API Key | https://platform.deepseek.com/api_keys | 桌面端在解析设置填写，或复用官方 DeepSeek 提供商的 Key。CLI 使用 `DEEPSEEK_OCR_API_KEY`，后处理使用官方地址时也可复用 `DEEPSEEK_API_KEY`。 |
 | PaddleOCR Token | https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5 | 备选规则引擎（免费 3000 页/天，选 PaddleOCR 时才需要） |
 | LLM/VLM API Key | https://platform.deepseek.com/api_keys 或智谱等 | 结构重建 + 翻译（规则族）；VLM 引擎的逐页转写 |
 
@@ -149,6 +151,7 @@ DashScope/Kimi/本地 vLLM），设置页填 Base URL 和 Key 后可测试连接
 
 ```bash
 python pipeline.py book.pdf                        # 标准转换（默认引擎 MinerU）
+python pipeline.py book.pdf --engine deepseek-ocr   # DeepSeek 官方版面识别
 python pipeline.py book.pdf --engine paddleocr     # PaddleOCR-VL 解析
 python pipeline.py book.pdf --engine vlm           # VLM 逐页视觉直读
 python pipeline.py book.pdf --format epub,md,tex   # 三格式同出（默认 epub）

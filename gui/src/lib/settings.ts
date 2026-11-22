@@ -19,7 +19,7 @@ export interface ProviderConfig {
 
 export interface ConvertOptions {
   mode: "rule" | "vlm";
-  ruleEngine: "mineru" | "paddleocr";
+  ruleEngine: "mineru" | "paddleocr" | "deepseek-ocr";
   ocr: boolean; // 仅规则模式有意义
   translate: boolean;
   translateLang: string;
@@ -39,6 +39,7 @@ export interface Settings {
   version: 2;
   ocr: {
     mineruToken: string;
+    deepseekOcrKey?: string;
     paddleocrToken: string;
     paddleocrApiUrl: string;
   };
@@ -88,7 +89,7 @@ export function defaultSettings(): Settings {
 }
 
 /** 选项 → pipeline --engine 值 */
-export function engineOf(o: ConvertOptions): "mineru" | "paddleocr" | "vlm" {
+export function engineOf(o: ConvertOptions): "mineru" | "paddleocr" | "deepseek-ocr" | "vlm" {
   return o.mode === "vlm" ? "vlm" : o.ruleEngine;
 }
 
@@ -132,10 +133,17 @@ export function reasoningSupported(s: Settings, modelRef: string): boolean {
   return ["z.ai", "bigmodel", "deepseek", "dashscope"].some((h) => host.includes(h));
 }
 
+export function deepseekOcrKey(s: Settings): string {
+  const official = s.providers.find((p) => p.enabled &&
+    /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/.test(p.baseUrl) && p.apiKey.trim());
+  return s.ocr.deepseekOcrKey?.trim() || official?.apiKey.trim() || "";
+}
+
 export function buildEnv(s: Settings, o: ConvertOptions): Record<string, string> {
   const env: Record<string, string> = {
     OCR_PROVIDER: engineOf(o),
     MINERU_TOKEN: s.ocr.mineruToken,
+    ...(engineOf(o) === "deepseek-ocr" && { DEEPSEEK_OCR_API_KEY: deepseekOcrKey(s) }),
     PADDLEOCR_TOKEN: s.ocr.paddleocrToken,
     PADDLEOCR_API_URL: s.ocr.paddleocrApiUrl,
   };

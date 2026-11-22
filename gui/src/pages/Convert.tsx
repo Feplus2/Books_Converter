@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { CloudUpload, FolderOpen, Play, ScanText, Sparkles, Trash2 } from "lucide-react";
 import { queueStore, useQueue } from "../lib/queue";
 import {
+  deepseekOcrKey,
   activatedModels,
   reasoningSupported,
   settingsStore,
@@ -114,6 +115,7 @@ export function ConvertPage() {
   const visionModels = activatedModels(settings, true);
   const allModels = activatedModels(settings, false);
   const mineruOk = !!settings.ocr.mineruToken.trim();
+  const deepseekOk = !!deepseekOcrKey(settings);
   const paddleOk = !!settings.ocr.paddleocrToken.trim();
 
   const hasQueued = tasks.some((t) => t.status === "queued");
@@ -208,12 +210,18 @@ export function ConvertPage() {
                 <Select
                   width={264}
                   value={opts.ruleEngine}
-                  onChange={(v) => setOpts({ ruleEngine: v as "mineru" | "paddleocr" })}
+                  onChange={(v) => setOpts({ ruleEngine: v as ConvertOptions["ruleEngine"] })}
                   options={[
                     {
                       value: "mineru",
                       label: `${S.convert.parseModelMineru}（${S.convert.parseModelMineruDesc}）`,
                       disabled: !mineruOk,
+                      disabledReason: S.convert.tokenMissing,
+                    },
+                    {
+                      value: "deepseek-ocr",
+                      label: "DeepSeek OCR",
+                      disabled: !deepseekOk,
                       disabledReason: S.convert.tokenMissing,
                     },
                     {
@@ -225,14 +233,17 @@ export function ConvertPage() {
                   ]}
                 />
                 {((opts.ruleEngine === "mineru" && !mineruOk) ||
+                  (opts.ruleEngine === "deepseek-ocr" && !deepseekOk) ||
                   (opts.ruleEngine === "paddleocr" && !paddleOk)) && (
                   <MissingHint onGo={goParse} />
                 )}
               </div>
             </Field>
-            <Field label={S.convert.ocrLabel} desc={S.convert.ocrDesc}>
-              <Toggle checked={opts.ocr} onChange={(v) => setOpts({ ocr: v })} />
-            </Field>
+            {opts.ruleEngine !== "deepseek-ocr" && (
+              <Field label={S.convert.ocrLabel} desc={S.convert.ocrDesc}>
+                <Toggle checked={opts.ocr} onChange={(v) => setOpts({ ocr: v })} />
+              </Field>
+            )}
             <Field label={S.convert.postModel} desc={S.convert.postModelDesc}>
               <Select
                 width={264}

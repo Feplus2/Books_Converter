@@ -5,6 +5,7 @@
 const ENGINE_NAMES: Record<string, string> = {
   mineru: "MinerU",
   paddleocr: "PaddleOCR",
+  "deepseek-ocr": "DeepSeek OCR",
   vlm: "VLM",
 };
 export const engineName = (id: string): string => ENGINE_NAMES[id] ?? id;
@@ -68,10 +69,10 @@ export const S = {
       "├── epub/<书名>.epub   ← 电子书成品",
       "├── md/                ← Markdown（index.md + chapters/ 分章 + images/）",
       "├── tex/               ← TeX + images/（默认完整文档，可 xelatex 直接编译）",
-      "├── vlm/ mineru/ paddleocr/ ← Stage 1 引擎缓存（按引擎各存一份；重跑提速，可整个删）",
+      "├── vlm/ mineru/ paddleocr/ deepseek-ocr/ ← Stage 1 引擎缓存（按引擎各存一份；重跑提速，可整个删）",
       "└── structure.json 等        ← 结构缓存（复跑/质检用，很小）",
     ].join("\n"),
-    outputLayoutNote: "vlm=逐页视觉模型，mineru/paddleocr=规则引擎——三者缓存互不通用，按引擎各存一份。转换完成后目录里只保留交付物与缓存，中间产物自动清理。",
+    outputLayoutNote: "vlm=逐页视觉模型，mineru/paddleocr/deepseek-ocr=规则引擎，按引擎各存一份。转换完成后目录里只保留交付物与缓存，中间产物自动清理。",
     formatLabel: "导出格式",
     mdSplit: "Markdown 分章",
     mdSplitDesc: "按章拆分为 index.md + chapters/",

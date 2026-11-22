@@ -52,7 +52,7 @@ export function buildReconvertOptions(src: ReconvertSource, s: Settings): Reconv
     }
   } else {
     o.mode = "rule";
-    o.ruleEngine = src.engine === "paddleocr" ? "paddleocr" : "mineru";
+    o.ruleEngine = src.engine === "paddleocr" || src.engine === "deepseek-ocr" ? src.engine : "mineru";
   }
   return { options: o, modelFallback };
 }

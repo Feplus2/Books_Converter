@@ -113,3 +113,7 @@ outline 来源时是扫描页）、`toc_source`（'outline'|None——outline �
 - 落盘形态 `{"translations": {key: 译文}, "glossary": {…}}`（嵌套）；导出层
   （stage3_export.build_units）嵌套/平铺两形兼容读取，查无译文回退原文
   （病例 061：曾按平铺直读 → md/tex 译文导出静默退回原文）。
+
+### DeepSeek OCR
+
+`--engine deepseek-ocr` 走官方 `/v1/tools/ocr` 的 `rich_layout_recognition`，将区域标记和坐标归一为 Stage 1 块并交给 Hybrid。原始响应按 PDF 的 SHA-256 和页段保存在 `deepseek-ocr/batches/`，可复用同一工作目录继续处理。非空白页面收到空结果时按单页图像重识别，再次为空则保留页图。

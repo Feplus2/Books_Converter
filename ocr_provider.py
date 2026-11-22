@@ -55,6 +55,7 @@ def count_pages(pdf_path: str) -> int:
 
 # 内置 provider 的懒加载入口：name -> (module, class)
 _BUILTIN = {
+    "deepseek-ocr": ("stage1_deepseek_ocr", "DeepSeekOcrProvider"),
     "mineru": ("stage1_mineru_provider", "MinerUProvider"),
     "paddleocr": ("stage1_paddleocr", "PaddleOcrProvider"),
     "vlm": ("stage1_vlm", "VlmProvider"),
