@@ -122,7 +122,7 @@ def download_image(url: str, name: str, images_out: Path) -> str | None:
 # ------------------------------------------------------------------
 
 def convert_layout_blocks(raws: list[dict], page_idx: int, images_out: Path,
-                          get_image_url) -> list[dict]:
+                          get_image_url, *, save_image=None) -> list[dict]:
     """一页的归一化块 → content_list 块（含图注绑定）。
 
     Args:
@@ -132,17 +132,18 @@ def convert_layout_blocks(raws: list[dict], page_idx: int, images_out: Path,
         images_out: 图片落盘目录
         get_image_url: callable(raw) -> str|None，返回该块的裁剪图 URL
             （仅图片类块会调用；返回 None 视为无图）
+        save_image: 可选回调，直接裁剪原页并返回本地文件名。
     """
     items = []
     for raw in raws:
-        block = _convert_one(raw, page_idx, images_out, get_image_url)
+        block = _convert_one(raw, page_idx, images_out, get_image_url, save_image)
         if block is not None:
             items.append(block)
     return _bind_figure_captions(items)
 
 
 def _convert_one(raw: dict, page_idx: int, images_out: Path,
-                 get_image_url) -> dict | None:
+                 get_image_url, save_image) -> dict | None:
     label = raw.get("label") or ""
     content = raw.get("content") or ""
     bbox = raw.get("bbox")
@@ -164,11 +165,14 @@ def _convert_one(raw: dict, page_idx: int, images_out: Path,
         return b
 
     # 图片类：URL 由 provider 解析（PaddleOCR 按 bbox 找 markdown.images 键）
-    if label in _IMAGE_LABELS or is_url(content):
-        url = get_image_url(raw)
-        if not url:
-            return None
-        name = download_image(url, raw["_img_name"], images_out)
+    if label in _IMAGE_LABELS or (get_image_url and is_url(content)):
+        if save_image:
+            name = save_image(raw)
+        else:
+            url = get_image_url(raw)
+            if not url:
+                return None
+            name = download_image(url, raw["_img_name"], images_out)
         if name is None:
             return None
         b = _base("image")
@@ -186,6 +190,8 @@ def _convert_one(raw: dict, page_idx: int, images_out: Path,
         return b
 
     # 图注/表注：panel 字母标丢弃；带编号图注/表注标记后由绑定步骤处理
+    if label == "image_caption" and content.strip():
+        return {**_base("_fig_caption"), "text": clean_text(content)}
     if label in _CAPTION_LABELS:
         text = clean_text(content)
         if not text or _PANEL_LABEL_RE.match(text):

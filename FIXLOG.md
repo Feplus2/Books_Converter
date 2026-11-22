@@ -2209,3 +2209,11 @@
 - **状态**：已修复并验证，已随 **v2.0.1** 发布（GitHub Release 四件产物 +
   腾讯 COS 镜像同步 workflow 跑绿；sidecar 与安装包内嵌管线一致性经
   sha256 核验）。
+
+## 病例 063｜DeepSeek OCR 扫描书版面适配
+
+中文样章中，图注有独立区域，圈号页注有时标为正文。适配器按原页裁图，依据同页正文标号和页底位置识别圈号脚注。真实书样页还出现了左侧页码目录、章号与章名分块、非空页面成功返回空文本。对应处理及复查位置见 `stage1_deepseek_ocr.py`。使用 `python scripts/check_deepseek_ocr.py NEW_OUTPUT_DIR` 生成原创样章和 EPUB，检查导航、图片、脚注往返和跨页续段。
+
+## 病例 064｜DeepSeek OCR 的截断页与带共享资源的扫描书
+
+《空间是机器》第 109 页随 97–120 页一起提交和单页 PDF 提交均返回 length；单页 JPEG 返回 stop。按页保存批结果，单独重识别异常页，保留已完成的页段。《我们为什么爱音乐》前 24 页与前 12 页的 PDF 请求均约 53 MiB 并返回 413。按可见页重建为图像 PDF 后，前 24 页分为 7.42 MiB 和 5.04 MiB 两批通过。断点重跑与 413 后缩批的覆盖见 tests/test_deepseek_ocr_batch_recovery.py。

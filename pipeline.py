@@ -42,7 +42,7 @@ from stage3_epub import generate_epub
 from progress_headless import HeadlessProgress, emit_error
 # ProgressWindow（tkinter）改为延迟导入，headless CLI 不打包 tkinter
 
-_ENGINE_DISPLAY = {"mineru": "MinerU", "paddleocr": "PaddleOCR", "vlm": "VLM"}
+_ENGINE_DISPLAY = {"deepseek-ocr": "DeepSeek OCR", "mineru": "MinerU", "paddleocr": "PaddleOCR", "vlm": "VLM"}
 
 # 环境类异常（网络/配额/云端服务）：Stage 1 失败提示按运维口径走。
 # 判断失败方向（铁律 0）：拿不准一律按"疑似程序 bug"报——宁可误惊动反馈，
@@ -740,7 +740,7 @@ def _load_stage1_cache(work_dir: Path, engine: str) -> dict | None:
     if preferred.is_dir():
         candidates.append(preferred)
     for d in sorted(work_dir.iterdir()):
-        if d.is_dir() and d not in candidates:
+        if d.is_dir() and d not in candidates and "deepseek-ocr" not in (engine, d.name):
             candidates.append(d)
 
     for d in candidates:
