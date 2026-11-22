@@ -116,28 +116,121 @@ def _recognize(payload, key, first, count, cache, filename="pages.pdf", mime="ap
     if len(pages) != count or result.get("page_count") != count:
         raise ValueError(f"OCR 第 {first+1} 页起返回页数不符")
     for i, page in enumerate(pages):
-        if (page.get("index") != i or page.get("finish_reason") != "stop"
-                or not isinstance(page.get("text"), str)):
-            raise ValueError(f"OCR 第 {first+i+1} 页返回不完整")
+        if not isinstance(page, dict) or page.get("index") != i:
+            raise ValueError(f"OCR 第 {first+i+1} 页的响应索引与请求不符")
     if not cache.exists():
         _write(cache, json.dumps(result, ensure_ascii=False))
     return pages
 
 
-def _page_text(page, text, cache_dir, key):
-    if text.strip():
+_BATCH_BYTES = 8 * 1024**2  # Target payload size for a recognition request.
+_PAGE_IMAGE = "<｜ref｜>image<｜/ref｜><｜box｜>[[0,0,1000,1000]]<｜/box｜>"
+
+
+def _jpeg(page, dpi=190):
+    scale = min(dpi / 72, 3400 / max(page.rect.width, page.rect.height))
+    return page.get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("jpeg", jpg_quality=90)
+
+
+def _complete_text(item):
+    text = item.get("text")
+    if item.get("finish_reason") == "stop" and isinstance(text, str):
         return text
-    preview = page.get_pixmap(dpi=72, colorspace=fitz.csGRAY)
-    if min(preview.samples) >= 245:
-        return ""
-    logging.info("DeepSeek OCR 第 %s 页有可见内容，复查单页图像", page.number + 1)
-    cache = cache_dir / f"page-{page.number}-jpeg.json"
-    jpeg = page.get_pixmap(dpi=190).tobytes("jpeg", jpg_quality=90)
-    result = _recognize(jpeg, key, page.number, 1, cache, "page.jpg", "image/jpeg")
-    if result[0]["text"].strip():
-        return result[0]["text"]
-    logging.warning("DeepSeek OCR 第 %s 页两次识别为空，保留原页图像", page.number + 1)
-    return "<｜ref｜>image<｜/ref｜><｜box｜>[[0,0,1000,1000]]<｜/box｜>"
+    return None
+
+
+def _page_text(page, item, cache_dir, key):
+    text = _complete_text(item)
+    if text is not None:
+        if text.strip():
+            return text
+        if min(page.get_pixmap(dpi=72, colorspace=fitz.csGRAY).samples) >= 245:
+            return ""
+    logging.info("第 %d 页复查单页图像（finish_reason=%s，文本长度=%d）",
+                 page.number + 1, item.get("finish_reason"),
+                 len(item["text"]) if isinstance(item.get("text"), str) else 0)
+    for dpi in (190, 96):
+        suffix = "jpeg" if dpi == 190 else "jpeg-96"
+        cache = cache_dir / f"page-{page.number}-{suffix}.json"
+        try:
+            result = _recognize(_jpeg(page, dpi), key, page.number, 1, cache,
+                                "page.jpg", "image/jpeg")
+        except requests.HTTPError as exc:
+            if exc.response.status_code != 413:
+                raise
+            logging.warning("第 %d 页 %d dpi 图像被拒绝（413）", page.number + 1, dpi)
+            continue
+        text = _complete_text(result[0])
+        if text and text.strip():
+            return text
+        if text is not None:  # An empty visual page can be preserved as an image.
+            break
+    logging.warning("第 %d 页单页识别仍不可用，EPUB 保留完整页图", page.number + 1)
+    return _PAGE_IMAGE
+
+
+def _raster_batch(doc, first, limit):
+    with fitz.open() as part:
+        size = 0
+        for i in range(first, first + limit):
+            page = doc[i]
+            image = _jpeg(page)
+            if len(part) and size + len(image) > _BATCH_BYTES:
+                break
+            part.new_page(width=page.rect.width, height=page.rect.height).insert_image(
+                page.rect, stream=image)
+            size += len(image)
+        return part.tobytes(), len(part)
+
+
+def _batches(doc, cache_dir, key):
+    # Legacy caches can have smaller ranges after local size-based splitting.
+    saved = {}
+    for path in cache_dir.glob("*-*.json"):
+        match = re.fullmatch(r"(\d+)-(\d+)\.json", path.name)
+        if match:
+            first, count = map(int, match.groups())
+            if 0 < count <= 24 and first + count <= len(doc):
+                saved[first] = max(count, saved.get(first, 0))
+    raster_mode = (cache_dir / "raster-mode").exists()
+    limit = 24
+    first = 0
+    while first < len(doc):
+        count = saved.get(first, min(limit, len(doc) - first))
+        cache = cache_dir / f"{first}-{count}.json"
+        if cache.exists():
+            pages = _recognize(None, key, first, count, cache)
+        else:
+            if not raster_mode:
+                with fitz.open() as part:
+                    part.insert_pdf(doc, from_page=first, to_page=first + count - 1)
+                    payload = part.tobytes(garbage=3, deflate=True)
+                raster_mode = len(payload) > _BATCH_BYTES
+            while True:
+                if raster_mode:
+                    if not (cache_dir / "raster-mode").exists():
+                        _write(cache_dir / "raster-mode", "1")
+                    payload, count = _raster_batch(doc, first, count)
+                cache = cache_dir / f"{first}-{count}.json"
+                logging.info("OCR 第 %d–%d 页，%.2f MiB%s", first+1, first+count,
+                             len(payload) / 1024**2, "（页图）" if raster_mode else "")
+                try:
+                    pages = _recognize(payload, key, first, count, cache)
+                    break
+                except requests.HTTPError as exc:
+                    if exc.response.status_code != 413:
+                        raise
+                    if raster_mode and count == 1:
+                        # _page_text retries the standalone JPEG outside its PDF wrapper.
+                        pages = [{"index": 0, "finish_reason": "http_413"}]
+                        break
+                    if raster_mode:
+                        count = max(1, count // 2)
+                        limit = count
+                    raster_mode = True
+                    logging.warning("OCR 拒绝本批请求（413），重新按页图分批")
+        yield first, pages
+        first += len(pages)
 
 
 class DeepSeekOcrProvider:
@@ -160,30 +253,17 @@ class DeepSeekOcrProvider:
         cache_dir.mkdir(parents=True, exist_ok=True)
         blocks, texts = [], []
         with fitz.open(pdf_path) as doc:
-            first = 0
-            while first < len(doc):
-                count = min(24, len(doc) - first)
-                while True:
-                    with fitz.open() as part:
-                        part.insert_pdf(doc, from_page=first, to_page=first+count-1)
-                        payload = part.tobytes(garbage=3, deflate=True)
-                    if len(payload) <= 100 * 1024**2:
-                        break
-                    if count == 1:
-                        raise ValueError(f"第 {first+1} 页超过 100 MiB")
-                    count //= 2
-                cache = cache_dir / f"{first}-{count}.json"
-                pages = _recognize(payload, key, first, count, cache)
+            for first, pages in _batches(doc, cache_dir, key):
                 for i, p in enumerate(pages):
                     page = doc[first + i]
-                    text = _page_text(page, p["text"], cache_dir, key)
+                    text = _page_text(page, p, cache_dir, key)
                     page_blocks = _page_blocks(page, text, images)
                     blocks.extend(page_blocks)
                     texts.extend(f"![插图](images/{b['img_path']})" if b.get("img_path")
                                  else b.get("text", b.get("table_body", "")) for b in page_blocks)
-                first += count
                 if progress:
-                    progress(f"DeepSeek OCR {first}/{len(doc)}", first / len(doc))
+                    done = first + len(pages)
+                    progress(f"DeepSeek OCR {done}/{len(doc)}", done / len(doc))
         stem = Path(pdf_path).stem
         markdown = "\n\n".join(texts)
         _write(out / f"{stem}.md", markdown)
